@@ -1,0 +1,304 @@
+/dts-v1/;
+/*
+ * ospi-overlay.dts - wolfBoot PR 1 (QEMU local Linux test) additions on
+ * top of QEMU's own amd-versal2-virt DTB (dumpdtb). Applied by mk_dtb.sh
+ * with fdtoverlay (fragment format), then one `fdtput` (also in mk_dtb.sh)
+ * patches the `clocks` property in place because fdtoverlay renumbers the
+ * overlay's phandles and QEMU's base clock nodes carry no labels.
+ *
+ * Two things only:
+ *
+ * 1. /chosen: the Linux command line. The console is the PL011 at
+ *    0xF1930000 (UART1) - the same UART wolfBoot uses (DEBUG_UART_NUM=1)
+ *    and QEMU serial port 2 (the test script captures it). earlycon binds
+ *    to the stdout-path device. maxcpus=1: the QEMU machine boots only
+ *    CPU0 (secondaries are power-off, no PLM/TF-A PSCI); see the "QEMU
+ *    limitations" section of BUILD.md. No root= needed: the FIT ramdisk
+ *    is the root filesystem (wolfBoot FIT_RAMDISK=1, /chosen/linux,
+ *    initrd-{start,end}).
+ *
+ * 2. The OSPI flash controller node. QEMU's dump has none (the model has
+ *    no FDT support), so it is added here with the shape AMD's VEK385
+ *    DTB uses for the same controller (evidence/vek385-prebuilt/
+ *    dtb-extract.txt, /axi/spi@f1010000). Run 11 compatible decision:
+ *
+ *      compatible = "cdns,qspi-nor" "qemu,xlnx-versal-ospi-nor";
+ *
+ *    i.e. the board's first string "amd,versal2-ospi" is DROPPED for the
+ *    QEMU build (it stays in the board DTB). The stock driver
+ *    (drivers/spi/spi-cadence-quadspi.c) selects its platform quirks by
+ *    compatible (cqspi_dt_ids[]); "amd,versal2-ospi" -> versal2_ospi
+ *    platdata = CQSPI_SUPPORTS_OCTAL + CQSPI_SUPPORT_EXTERNAL_DMA, which
+ *    in the stock driver means:
+ *      (a) aligned bulk reads go through the CSU DMA only after a
+ *          zynqmp_pm_ospi_mux_select() PM ioctl (IOCTL_OSPI_MUX_SELECT =
+ *          21) over the SMC conduit; in QEMU the zynqmp firmware driver
+ *          never completes its PM SMC handshake (zero "SMC 0x..." trace
+ *          lines in the console in any Run 11 boot, no "Platform
+ *          Management API v1.0" probe message, and the first (SFDP) DMA
+ *          read fails with "spi-nor spi0.0: CS0: operation failed with
+ *          -19" = -ENODEV from zynqmp_pm_ioctl with no firmware ops);
+ *      (b) the OCTAL hwcaps make spi-nor switch the flash to 8D-8D-8D
+ *          (DTR/DDR, DQS-based). The QEMU OSPI model has no DQS/DDR PHY
+ *          fidelity, so the driver's periodic delay-line tuning
+ *          (CQSPI_TUNING_PERIODICITY_MS = 300000 ms; cqspi_setdlldelay:
+ *          tap-scan + JEDEC-ID match window >= 3) fails with -EINVAL
+ *          ("CS0: periodic tuning failed (-22)") about 5 min into the
+ *          wbmtd update write and the write aborts (the Run 11 L2
+ *          blocker).
+ *    With the generic "cdns,qspi-nor" string the driver binds the
+ *    cdns_qspi platdata (quirks = CQSPI_DISABLE_DAC_MODE only):
+ *    no EXTERNAL_DMA (no firmware/mux-select dependency; reads use the
+ *    APB indirect-read engine + DAC data window - the same path
+ *    wolfBoot uses, proven by the FIT load), no OCTAL hwcaps (the flash
+ *    stays SDR; the periodic tuning is then an SDR tap-scan, whose
+ *    JEDEC-ID reads the model answers correctly), STIG enabled,
+ *    wr-completion on. Everything else (register layout, indirect write
+ *    + completion IRQ, fixed partitions) is identical, and on real
+ *    VEK385 hardware the board DTB keeps "amd,versal2-ospi" (the stock
+ *    versal2_ospi path is the board-correct one; the string change is
+ *    QEMU-only, which is why the DTB overlay - not the driver - carries
+ *    it). The trailing "qemu,xlnx-versal-ospi-nor" string is inert now
+ *    that the QEMU-only kdrv module (tools/scripts/versal2/qemu/linux/
+ *    kdrv/versal2-ospi-nor.c) was removed in Run 11 - the stock
+ *    "cdns,qspi-nor" driver works in QEMU - but it is kept in the
+ *    compatible list so the DTB layout stays stable.
+ *
+ *    "cdns,qspi-nor" is the Linux compatible for the Cadence QSPI/OSPI
+ *    controller; the flash child "jedec,spi-nor" is picked up by the
+ *    standard SPI-NOR MTD driver, so NO custom kernel or driver module
+ *    is needed: the stock AMD EDF kernel probes QEMU's OSPI model
+ *    (hw/ssi/xlnx-versal-ospi.c: APB registers at 0xF1010000, DAC
+ *    window at 0xC0000000 size 0x20000000, GIC SPI 216 on this machine,
+ *    CSU DMA at 0xF1011000/0xF1011800 - all modelled). Note the IRQ
+ *    number is machine-dependent: amd-versal2-virt uses VERSAL2_MAP in
+ *    hw/arm/xlnx-versal.c, whose .ospi.irq is 216 (the .ospi.irq = 124
+ *    entry belongs to the Versal Gen1 VERSAL_MAP; the VEK385 board DTB
+ *    also says 124, but QEMU's machine wires 216 - see the
+ *    interrupts property below for the full evidence).
+ *
+ *    The stock driver's cqspi_of_get_pdata() (EDF 6.18.10-xilinx)
+ *    REQUIRES cdns,fifo-depth / cdns,fifo-width / cdns,trigger-address
+ *    on the controller and cdns,read-delay / cdns,tshsl-ns /
+ *    cdns,tsd2d-ns / cdns,tchsh-ns / cdns,tslch-ns on the flash node
+ *    (missing cdns,read-delay is the run-9 "couldn't determine
+ *    read-delay" + "failed to setup flash parameters -6"). The system
+ *    dtc 1.7.2 cannot parse comma-containing property names, so all of
+ *    them are written by mk_dtb.sh into the combined tree
+ *    (fdt_setprop.py --cells) with the exact VEK385 values
+ *    (fifo-depth 256 = the model's detected depth, no
+ *    "FIFO depth (256) different from config" warning; trigger-address
+ *    0xc0000000; read-delay 0, tshsl-ns 0, tsd2d-ns 0, tchsh-ns 1,
+ *    tslch-ns 1).
+ *
+ *    The /firmware node below ("xlnx,versal2-firmware", method "smc") is
+ *    kept for the zynqmp firmware driver. With the cdns_qspi platdata
+ *    (see above) the OSPI driver no longer depends on it; the trampoline
+ *    still implements the PM SMC answers (see trampoline.S, AMD System
+ *    Controller PM API section).
+ *
+ *    The fixed-partitions children must match
+ *    config/examples/versal2_vek385_linux.config exactly (run-13 layout;
+ *    old run 3-12 values BOOT 0x19C0000 / UPDATE 0x4600000 kept for
+ *    reference - run 13 layout decision: 8 MB BOOT.BIN reservation, AMD
+ *    BOOT.BIN 5.31 MiB, evidence/mdom-bank-analysis-run9.txt):
+ *      BOOT   0x1DC0000  44 MB   (/dev/mtd* "boot")
+ *      UPDATE 0x49C0000  44 MB   (/dev/mtd* "update")
+ *      SWAP   0xFA40000  64 KB   (/dev/mtd* "swap")
+ *
+ *    The flash@0 reg is the chip-select (0) per the controller's
+ *    #address-cells=1 / #size-cells=0. The flash timing properties match
+ *    the VEK385 DTB at its 20 MHz spi-max-frequency (the QEMU model has
+ *    no PHY timing, so the driver's delay-line tuning writes are
+ *    register-only there).
+ */
+/ {
+	fragment@0 {
+		target-path = "/chosen";
+		__overlay__ {
+			/* The bootargs are the same shape AMD's own VEK385 DTB
+			 * uses (evidence/vek385-prebuilt/dtb-extract.txt, /chosen
+			 * "earlycon=pl011,mmio32,0xf1930000 console=ttyAMA..."),
+			 * adapted to QEMU's machine:
+			 *   earlycon=pl011,mmio32,0xf1930000 - the PL011 earlycon
+			 *     driver prints from the earliest point (the EDF kernel
+			 *     carries it; its __earlycon_table entry "pl011" is in
+			 *     the Image). With the explicit device it does not
+			 *     depend on stdout-path.
+			 *   console=ttyAMA0,115200 - QEMU's base DTB lists
+			 *     /uart@f1930000 (UART1) before /uart@f1920000, so the
+			 *     PL011 at 0xF1930000 (the console port, QEMU serial1)
+			 *     is ttyAMA0 here (the VEK385 board DTB has it as
+			 *     ttyAMA1 because its UART0 node comes first).
+			 *   maxcpus=1 - the QEMU machine boots only CPU0 (secondary
+			 *     cores are power-off, no PLM/TF-A PSCI).
+			 *   rdinit=/init - the initramfs /init (busybox shell +
+			 *     wbmtd) is the root; no root= argument is needed.
+			 * stdout-path stays the console UART so any
+			 * stdout-path-based (parameter-less) earlycon also binds to
+			 * 0xF1930000. */
+			/*
+			 * NOTE on console tty numbering (verified from the kernel's own
+			 * probe log on this QEMU): the PL011 driver assigns
+			 *   ttyAMA0 = 0xf1920000 (UART0, QEMU serial0 -> "-serial null")
+			 *   ttyAMA1 = 0xf1930000 (UART1, QEMU serial1 -> the capture)
+			 * (the tty numbers do NOT follow the DTB node order). The console
+			 * must therefore be ttyAMA1 (0xF1930000) - the same UART wolfBoot
+			 * uses (DEBUG_UART_NUM=1) and the one QEMU serial1 captures. Using
+			 * ttyAMA0 sends the kernel's final console to serial0 (null) and
+			 * all post-boot output is lost. */
+			stdout-path = "/uart@f1930000";
+			bootargs = "earlycon=pl011,mmio32,0xf1930000 console=ttyAMA1,115200 maxcpus=1 rdinit=/init initcall_debug";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			/* OSPI NOR flash controller (Cadence, QEMU xlnx-versal-ospi
+			 * model). The root node uses #address-cells/#size-cells = 2, so
+			 * the reg values are 64-bit (high,low) pairs. Two regions, same
+			 * order as AMD's VEK385 DTB:
+			 *   reg 0: APB register file at 0xF1010000 (model: 0x104 of
+			 *          registers; the 64 KB window matches the board DTB).
+			 *   reg 1: AXI DAC window (512 MB) at 0xC0000000; the 256 MB
+			 *          flash maps to the lower half (offset == flash addr). */
+			qspi@f1010000 {
+				/* The final property is the two-string
+				 * compatible = "amd,versal2-ospi" "cdns,qspi-nor";
+				 * but the system dtc 1.7.2 (Debian) cannot parse multi-string
+				 * property values in DTS source at all ("model = \"a\" \"b\";"
+				 * is a syntax error), so the node is compiled with the single
+				 * "cdns,qspi-nor" string and mk_dtb.sh rewrites the property
+				 * in the binary tree with libfdt (fdt_setprop.py). */
+				compatible = "cdns,qspi-nor";
+				reg = <0x0 0xf1010000 0x0 0x10000
+				       0x0 0xc0000000 0x0 0x20000000>;
+				/* GIC SPI 216 (QEMU amd-versal2-virt machine wiring).
+				 * The stock driver's indirect ops complete on an IRQ:
+				 * cqspi_indirect_write_execute() arms IRQMASK and waits
+				 * for the completion IRQ; the CSU DMA read path completes
+				 * on the DMA-done IRQ. The QEMU machine ORs the OSPI IRQ
+				 * and both CSU DMA IRQs onto ONE GIC SPI line
+				 * (versal_create_ospi(), hw/arm/xlnx-versal.c:
+				 * create_or_gate(..., 3, map->irq)); for amd-versal2-virt
+				 * (VERSAL_VER_VERSAL2 -> VERSAL2_MAP) that line is
+				 * map->ospi.irq = 216. The old value below (124) matched
+				 * the VEK385 board DTB and the VERSAL_MAP (Gen1) entry, but
+				 * not this machine: with 124 the kernel armed the wrong GIC
+				 * line, every indirect write timed out ("Indirect write
+				 * timeout", probe failed with -110, no /dev/mtd) even
+				 * though the model completed the ops (QEMU model trace,
+				 * Run 11). 216 is unused by every other node of QEMU's
+				 * base DTB and by every other device of VERSAL2_MAP.
+				 * Old (wrong for this machine) value, kept for reference:
+				 *   interrupts = <0x0 124 0x4>;  // board/Gen1 value */
+				interrupts = <0x0 216 0x4>;
+				clock-names = "ref";
+				/* The stock driver (cqspi_of_get_pdata) REQUIRES
+				 * cdns,fifo-width and cdns,trigger-address and uses
+				 * cdns,fifo-depth to size its indirect read chunks;
+				 * the system dtc 1.7.2 cannot parse property names
+				 * containing commas, so mk_dtb.sh writes all three as
+				 * 32-bit cells into the combined tree (fdt_setprop.py
+				 * --cells): fifo-width=4, trigger-address=0xc0000000
+				 * (the DAC window base), fifo-depth=4 (chunk = 12 bytes,
+				 * inside the model's indac trigger range). */
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* The NOR flash on chip-select 0. The timing
+				 * properties (cdns,read-delay, cdns,tshsl-ns,
+				 * cdns,tsd2d-ns, cdns,tchsh-ns,
+				 * cdns,tslch-ns) are REQUIRED by the stock
+				 * driver (cqspi_of_get_flash_pdata; their
+				 * absence is the run-9 "couldn't determine
+				 * read-delay" / -ENODEV probe failure) but the
+				 * system dtc 1.7.2 cannot parse the
+				 * comma-containing names, so mk_dtb.sh writes
+				 * them with the VEK385 values (read-delay 0,
+				 * tshsl-ns 0, tsd2d-ns 0, tchsh-ns 1,
+				 * tslch-ns 1). */
+				flash@0 {
+					compatible = "jedec,spi-nor";
+					reg = <0>;
+					/* 20 MHz, the VEK385 value (QEMU's "ref"
+					 * clock is the 125 MHz /clk125 fixed
+					 * clock; the driver derives its sclk
+					 * divisor from it). */
+					spi-max-frequency = <20000000>;
+					/* SDR only (Run 11): the generic cdns_qspi platdata
+					 * advertises no octal/quad hwcaps, so spi-nor keeps
+					 * the flash in standard SPI mode; the 8-IO values
+					 * below would push it to 8D-8D-8D and the QEMU
+					 * model's periodic DQS/DDR tuning cannot follow.
+					 * Kept for reference (the VEK385 board values):
+					 *   spi-rx-bus-width = <8>;
+					 *   spi-tx-bus-width = <8>;
+					 */
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					partitions {
+						compatible = "fixed-partitions";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						/* wolfBoot BOOT partition (config:
+						 * WOLFBOOT_PARTITION_BOOT_ADDRESS=0x1DC0000,
+						 * WOLFBOOT_PARTITION_SIZE=0x2C00000; old run 3-12
+						 * node: partition@19c0000, reg <0x19c0000 0x2c00000>) */
+						partition@1dc0000 {
+							reg = <0x1dc0000 0x2c00000>;
+							label = "boot";
+						};
+
+						/* wolfBoot UPDATE partition (config:
+						 * WOLFBOOT_PARTITION_UPDATE_ADDRESS=0x49C0000; old
+						 * run 3-12 node: partition@4600000,
+						 * reg <0x4600000 0x2c00000>) */
+						partition@49c0000 {
+							reg = <0x49c0000 0x2c00000>;
+							label = "update";
+						};
+
+						/* wolfBoot SWAP / trailer staging sector
+						 * (config: WOLFBOOT_PARTITION_SWAP_ADDRESS=
+						 * 0xFA40000, WOLFBOOT_SECTOR_SIZE=0x10000) */
+						partition@fa40000 {
+							reg = <0xfa40000 0x10000>;
+							label = "swap";
+						};
+					};
+				};
+			};
+		};
+	};
+
+	/*
+	 * The zynqmp System-Controller firmware node. The stock
+	 * spi-cadence-quadspi driver's versal2_ospi data selects the DMA
+	 * path (CQSPI_SUPPORTS_OCTAL -> use_dma_read); every DMA read first
+	 * issues zynqmp_pm_ospi_mux_select() (PM_IOCTL /
+	 * IOCTL_OSPI_MUX_SELECT) through the zynqmp firmware driver
+	 * (drivers/firmware/xilinx/zynqmp-pm.c), which needs this DTB node
+	 * to probe at all - otherwise the mux select fails and every DMA
+	 * read returns -ENODEV. The kernel requires the method property
+	 * ("smc" or "hvc"); "smc" because QEMU's trampoline answers the
+	 * PM SMCs at EL3 (see trampoline.S, AMD System Controller PM API
+	 * section). The VEK385 DTB carries the same node (with a
+	 * power-domains cell the driver parses as its pd_dev_id; QEMU has
+	 * no System Controller power domain, and the trampoline no-ops the
+	 * mux select regardless of the id, so it is omitted here).
+	 */
+	fragment@2 {
+		target-path = "/";
+		__overlay__ {
+			firmware {
+				compatible = "xlnx,versal2-firmware";
+				method = "smc";
+				status = "okay";
+			};
+		};
+	};
+};

@@ -44,6 +44,9 @@ ifeq ($(TZEN),1)
   CFLAGS:=-I./wcs $(CFLAGS)
 endif
 CFLAGS+=-I. -I..
+# Extra defines for the test application (e.g. -DWOLFBOOT2_TRIGGER, -DWOLFBOOT2_CONFIRM
+# for the A/B update flow; see app_versal2.c). Set from the command line or config.
+CFLAGS+= $(TESTAPP_CFLAGS_EXTRA)
 # Same opt-out as the bootloader build: target.h is shared, so the
 # partition-vs-bootloader-region guards must be suppressed here too.
 ifeq ($(WOLFBOOT_ALLOW_PART_OVERLAP),1)
@@ -1453,6 +1456,14 @@ ifeq ($(TARGET),versal)
   # Enable DEBUG_UART for test-app to use wolfBoot_printf and hal functions
   DEBUG_UART:=1
   CFLAGS+=-DDEBUG_UART
+endif
+
+ifeq ($(TARGET),versal2)
+  LSCRIPT_TEMPLATE:=AARCH64.ld
+  LDFLAGS+=-nostdlib
+  # Enable DEBUG_UART for test-app to use wolfBoot_printf and hal functions
+  DEBUG_UART:=1
+  CFLAGS+=-DDEBUG_UART -DTESTAPP_VERSION=$(WOLFBOOT_VERSION)
 endif
 
 ifeq ($(TARGET),zynq)

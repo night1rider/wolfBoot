@@ -32,6 +32,8 @@
  * compile in for the active target. */
 #if defined(TARGET_versal)
 #include "hal/versal.h"
+#elif defined(TARGET_versal2)
+#include "hal/versal2.h"
 #elif defined(TARGET_agilex5)
 #include "hal/agilex5.h"
 #elif defined(TARGET_zynq)
@@ -221,7 +223,8 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
      * "Non-EFI boot detected with MMU and caches enabled" otherwise),
      * and correct for any payload that sets up its own translation
      * (hypervisor, RTOS, later bootloader stage). */
-#if defined(MMU) && defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1
+#if defined(MMU) && defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1 && \
+    !defined(TARGET_versal2)
     if (current_el() == 2) {
         wolfBoot_printf("do_boot: flushing caches, disabling MMU\n");
         /* Fused flush+disable+jump: a stack reload between a separate
@@ -259,6 +262,51 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
     asm volatile("ic iallu");
     asm volatile("dsb ish");
     asm volatile("isb");
+#endif
+
+#if defined(TARGET_versal2) && defined(MMU)
+#ifdef WOLFBOOT_VERSAL2_EL2_MMU_OFF
+    /*
+     * Linux payload at EL2 (ARM64 boot protocol): flush the caches, disable
+     * the MMU and jump to the kernel still at EL2 (see
+     * el2_flush_disable_mmu_and_boot).
+     *
+     * The kernel records the MMU-off entry in record_mmu_state() (SCTLR_EL2.M
+     * is cleared) and finalise_el2() then switches it to VHE (EL2 host) via
+     * the "hvc #0" -> __finalise_el2 path, which requires SCR_EL3.HCE (set by
+     * the QEMU trampoline; without it the hvc is UNDEFINED at EL1).  This
+     * handoff is required for a non-EFI boot: with the MMU/caches still on,
+     * check_mmu_enabled_at_boot() panics with
+     * "Non-EFI boot detected with MMU and caches enabled".
+     */
+    el2_flush_disable_mmu_and_boot((uintptr_t)app_offset,
+                                   (uintptr_t)dts_offset);
+    return;
+#else
+    /* The bare-metal test-app keeps the MMU/caches ON: QEMU's
+     * amd-versal2-virt NoC rejects MMU-off (non-cacheable) data stores to
+     * upper DDR with a synchronous external abort, while the cacheable
+     * identity map is accepted.  So the app runs with the MMU on at the
+     * current EL.  Clean the image + DTB from the D-cache and invalidate the
+     * I-cache before the jump so the payload sees fresh DRAM. */
+    #ifndef WOLFBOOT_MMU_FLUSH_APP_SIZE
+    #define WOLFBOOT_MMU_FLUSH_APP_SIZE WOLFBOOT_PARTITION_SIZE
+    #endif
+    #ifndef WOLFBOOT_MMU_FLUSH_DTS_SIZE
+    #define WOLFBOOT_MMU_FLUSH_DTS_SIZE 0x100000UL
+    #endif
+    flush_dcache_range((unsigned long)(uintptr_t)app_offset,
+                       (unsigned long)(uintptr_t)app_offset
+                           + (unsigned long)WOLFBOOT_MMU_FLUSH_APP_SIZE);
+    if ((uintptr_t)dts_offset != 0) {
+        flush_dcache_range((unsigned long)(uintptr_t)dts_offset,
+                           (unsigned long)(uintptr_t)dts_offset
+                               + (unsigned long)WOLFBOOT_MMU_FLUSH_DTS_SIZE);
+    }
+    asm volatile("ic iallu");
+    asm volatile("dsb ish");
+    asm volatile("isb");
+#endif
 #endif
 
     /* Set application address via x4 */

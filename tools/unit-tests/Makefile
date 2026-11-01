@@ -149,6 +149,10 @@ TESTS+=unit-imx95-disk
 TESTS+=unit-versal-ext-write
 TESTS+=unit-versal-wdt
 TESTS+=unit-versal-uart-rx
+TESTS+=unit-versal2-ospi
+TESTS+=unit-versal2-ospi-dma
+TESTS+=unit-versal2-uart
+TESTS+=unit-versal2-uart-uart0
 TESTS+=unit-raspi3-uart-rx
 TESTS+=unit-mpfs-wdt
 TESTS+=unit-t10xx-qe-firmware
@@ -1806,6 +1810,41 @@ versal_uart_rx_extract.h: ../../hal/versal.c
 
 unit-versal-uart-rx: unit-versal-uart-rx.c versal_uart_rx_extract.h versal_host.h
 	gcc -o $@ unit-versal-uart-rx.c -DARCH_AARCH64 -DARCH_64BIT $(CFLAGS) $(LDFLAGS)
+
+# unit-versal2-ospi runs the real TARGET=versal2 OSPI safety logic from
+# hal/versal2.c (opcode allow-list + erase sizes + address guard + page
+# bound + erase chunker + flash-mode detection, in the STIG path) against
+# an emulated OSPI register file and NOR flash. The safety-critical block
+# is delimited by OSPI_TEST_CORE_BEGIN/END in hal/versal2.c so it can be
+# extracted verbatim; the test provides emulated ospi_reg_read/write and
+# hal_delay_us. unit-versal2-ospi-dma is the same test compiled with
+# WOLFBOOT_OSPI_DMA=1, which adds checks for the DMA read path's register
+# sequence, DONE/W1C handling, timeout and alignment refusals. See
+# BUILD.md and the task list (section 6) for the safety requirements this
+# test pins down.
+versal2_ospi_extract.h: ../../hal/versal2.c
+	sed -n '/^\/\*OSPI_TEST_CORE_BEGIN\*\//,/^\/\*OSPI_TEST_CORE_END\*\//p' $< > $@
+	test -s $@
+
+unit-versal2-ospi: unit-versal2-ospi.c versal2_ospi_extract.h ../../hal/versal2.h
+	gcc -o $@ unit-versal2-ospi.c -DARCH_AARCH64 -DARCH_64BIT -I../../hal $(CFLAGS) $(LDFLAGS)
+
+# DMA variant: exercise ospi_dma_read() (off by default in the target
+# build). OSPI_DMA_TIMEOUT is shrunk so the stall test returns quickly.
+unit-versal2-ospi-dma: unit-versal2-ospi.c versal2_ospi_extract.h ../../hal/versal2.h
+	gcc -o $@ unit-versal2-ospi.c -DARCH_AARCH64 -DARCH_64BIT \
+	  -DWOLFBOOT_OSPI_DMA=1 -DOSPI_DMA_TIMEOUT=1000 -I../../hal $(CFLAGS) $(LDFLAGS)
+
+# unit-versal2-uart checks the PL011 baud-rate divisor calculation in
+# hal/versal2.h (versal2_uart_baud_divisors) and the DEBUG_UART_NUM
+# selection (default / 1 = UART1, the VEK385 console). The -uart0
+# variant is built with -DDEBUG_UART_NUM=0 and proves UART0 is selected.
+# See the run-3 baud fix (BUILD.md, Run 3, item 1).
+unit-versal2-uart: unit-versal2-uart.c ../../hal/versal2.h
+	gcc -o $@ unit-versal2-uart.c -I../../hal $(CFLAGS) $(LDFLAGS)
+
+unit-versal2-uart-uart0: unit-versal2-uart.c ../../hal/versal2.h
+	gcc -o $@ unit-versal2-uart.c -DDEBUG_UART_NUM=0 -I../../hal $(CFLAGS) $(LDFLAGS)
 
 # unit-raspi3-uart-rx runs the real uart_rx() from hal/raspi3.c, the
 # other PL011 console in the tree, against an emulated register block.

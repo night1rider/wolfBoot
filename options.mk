@@ -1202,6 +1202,14 @@ ifeq ($(BOOT_EL2),1)
   CFLAGS+=-D"BOOT_EL2"
 endif
 
+# On versal2, boot a Linux payload at EL2 using the ARM64 boot protocol
+# (MMU/caches off, jump to the kernel still at EL2; it finalises to VHE).
+# Without this the versal2 do_boot keeps the MMU on (the bare-metal test-app
+# QEMU workaround) and the kernel panics in check_mmu_enabled_at_boot().
+ifeq ($(WOLFBOOT_VERSAL2_EL2_MMU_OFF),1)
+  CFLAGS+=-D"WOLFBOOT_VERSAL2_EL2_MMU_OFF"
+endif
+
 ifeq ($(BOOT_BENCHMARK),1)
   CFLAGS+=-D"BOOT_BENCHMARK"
 endif

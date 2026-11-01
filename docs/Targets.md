@@ -79,6 +79,7 @@ This README describes configuration of supported targets.
 * [Xilinx Zynq UltraScale](#xilinx-zynq-ultrascale)
 * [Xilinx Zynq-7000 (ZC702)](#xilinx-zynq-7000-zc702)
 * [Versal Gen 1 VMK180](#versal-gen-1-vmk180)
+* [Versal Gen 2 VEK385](#versal-gen-2-vek385)
 
 ## STM32F4
 
@@ -4932,6 +4933,144 @@ sudo fdisk -l /dev/sdX
 | QSPI32    | 0 0 1 0       | on, on, off, on |
 | SD1       | 1 1 1 0       | off, off, off, on |
 
+
+## Versal Gen 2 VEK385
+
+> **QEMU-first (PR 1):** this target is brought up and proven entirely in QEMU's
+> `amd-versal2-virt` machine (QEMU 11.1.3). There is no board, XSA, `BOOT.BIN`
+> or JTAG work in PR 1; the production boot flow (PLM/PSM/BL31 hand-off, DDR and
+> clock bring-up) is left to PR 2. See `BUILD.md` and `tools/scripts/versal2/` for
+> the QEMU bring-up evidence and the test script.
+
+AMD Versal AI Edge / Prime Gen 2 (VEK385) Evaluation Kit - Adaptive SoC with dual
+Cortex-A78AE application processors. `TARGET=versal2` is a sibling of the Gen 1
+`TARGET=versal`, using the same AArch64 boot scaffolding and the OSPI (Cadence)
+flash controller instead of the Gen 1 QSPI one.
+
+wolfBoot replaces U-Boot in the Versal boot flow:
+```
+PLM -> PSM -> BL31 (EL3) -> wolfBoot (EL2) -> Linux (EL2)
+```
+
+wolfBoot runs from DDR at `0x40000000` (EL2, non-secure, AMD's default BL33
+entry). All clock, MIO and DDR initialization is handled by PLM/PSM/BL31 before
+wolfBoot starts; wolfBoot only uses the A78AE general-purpose peripherals -
+UART1 console and the OSPI NOR flash.
+
+The application is entered at **EL2** by default (`BOOT_EL2` in `hal/versal2.h`),
+mirroring Gen 1. `SKIP_GIC_INIT=1` because BL31 owns the GICv3.
+
+### Prerequisites (QEMU)
+
+1. **QEMU 11.1.3** with the `amd-versal2-virt` machine (the first stable
+   release with the Versal OSPI + CSU DMA models; the OSPI register fix
+   `hw/core/register: add register_array_get_owner`, commit `57abf6b1d5`, is
+   upstream). Distro QEMU usually lacks `amd-versal2-virt`, so use the
+   verified 11.1.3 release build (see `BUILD.md`).
+2. **aarch64 cross compiler**: `aarch64-linux-gnu-gcc`.
+
+### Configuration
+
+Key options in `config/examples/versal2_vek385.config`:
+
+- `TARGET=versal2` - Versal Gen 2 platform target.
+- `WOLFBOOT_ORIGIN=0x40000000` - BL33 entry in DDR.
+- `WOLFBOOT_LOAD_ADDRESS=0x20000000` - payload staging, clears the RPU-reserved
+  regions (which end at `0x1E4E7FFF`).
+- `EXT_FLASH=1`, `ELF=1`, `WOLFBOOT_DUALBOOT=1`.
+- `WOLFBOOT_SECTOR_SIZE=0x10000` (64 KB wolfBoot logical sector; the flash's
+  hardware sector erase is 128 KB, so a 64 KB erase is done as two 32 KB
+  subsector-erases - the MT35XU02G has no 64 KB erase).
+- `DEBUG_UART_NUM=1` - UART1 at `0xF1930000` is the VEK385 console.
+
+**OSPI flash layout** (Micron MT35XU02GCBA, 256 MB, on the OSPI interface;
+run-13 layout - the run-13 decision reserves **8 MB** for AMD's BOOT.BIN at
+the start of Bank A; AMD's real multidomain BOOT.BIN is 5.31 MiB, ending at
+`0x1B0FE40`, which overlapped the run-3 4 MB reservation):
+
+| Partition | Size   | Address | Description |
+|-----------|--------|---------|-------------|
+| Bootloader| -      | 0x40000000 | wolfBoot in DDR (loaded by BL31) |
+| BOOT.BIN  | 8 MB   | 0x15C0000 | reservation at the start of Bank A (PLM + TF-A + wolfBoot image; PR 2) |
+| BOOT      | 44 MB  | 0x1DC0000 | Boot partition in OSPI NOR |
+| UPDATE    | 44 MB  | 0x49C0000 | Update partition in OSPI NOR |
+| DTS boot  | 1 MB   | 0x7600000 | standalone DTB slot after UPDATE |
+| DTS update| 1 MB   | 0x7E00000 | standalone DTB slot |
+| SWAP      | 64 KB  | 0xFA40000 | A/B state / swap area (User Scratchpad) |
+
+(Old run-3 layout, for reference: BOOT `0x19C0000`, UPDATE `0x4600000`,
+DTS slots `0x7200000`/`0x7A00000`, after a 4 MB BOOT.BIN reservation
+`0x15C0000`-`0x19BFFFF`; the very first layout was BOOT `0x1600000`,
+UPDATE `0x4200000`.)
+
+The flash uses 4-byte addressing for addresses above 16 MB, so the driver uses the
+native 4-byte opcodes (`READ4 0x13`, `PP4 0x12`, `ERASE4 0x21/0x5C/0xDC`) and never
+the legacy 3-byte set. `0xDC` erases the device's **128 KB** sector (Micron
+Table 32 / QEMU sector size).
+
+On top of the STIG data path the driver provides:
+
+- **Flash mode detection** at init: read the JEDEC ID (`9Fh`); on failure
+  (no flash, or flash left in a non-SPI I/O mode) issue RESET (`66h`/`99h`)
+  and write the volatile I/O-mode register (`81h`) back to 1-bit Extended SPI,
+  then retry; a permanently dead flash fails init (volatile-only, no `B1h`
+  nonvolatile writes).
+- **Optional CSU DMA read path** (`ospi_dma_read()`, AM026 ch. 66 / `xospipsv`
+  programming), used only when `WOLFBOOT_OSPI_DMA=1` (default off; STIG is the
+  default read path).
+
+### OSPI driver safety (task list, section 6)
+
+The OSPI driver (`hal/versal2.c`) enforces two safety properties in
+`ospi_stig()`, the single function that reaches the flash:
+
+1. **Opcode allow-list** - only the opcodes the driver needs may be issued. Every
+   protect / pin / lock / config opcode (the forbidden set `42h 68h 2Ch
+   27h/28h/29h B1h 01h E3h E4h A6h E5h C4h B9h`) is refused.
+2. **Address guard** - program and erase commands may only target the wolfBoot
+   BOOT / UPDATE / SWAP partitions. AMD's Image Selector / Image Recovery /
+   metadata areas (`0x000000-0x015BFFFF`), Bank B, and the tail past a partition
+   are all refused.
+
+The driver never touches eFUSEs, the System Controller, board voltages, or the
+ZynqMP eFuse/BBRAM options. A page program must not cross a 256-byte page
+boundary.
+
+These properties are pinned down by the host unit test `tools/unit-tests/
+unit-versal2-ospi.c`, which extracts the safety-critical block from `hal/versal2.c`
+verbatim and runs it against an emulated OSPI register file.
+
+### Build (QEMU)
+
+```sh
+cp config/examples/versal2_vek385.config .config
+make clean TARGET=versal2
+make TARGET=versal2
+```
+
+### QEMU verification (Q2/Q5)
+
+`tools/scripts/versal2/qemu/test_qemu.sh` runs the acceptance scenarios in QEMU:
+smoke boot (Q2), update to a higher version (Q5a), a refused corrupt update (Q5b),
+rollback of an unconfirmed (TESTING) image (Q5c), and recovery from an interrupted
+update (Q5d). It loads a tiny EL3 -> EL2 trampoline (QEMU starts the CPU at EL3,
+where BL31 would run) that ERETs into wolfBoot at `0x40000000`.
+
+```sh
+QEMU=/path/to/qemu-system-aarch64 \
+  WOLFBOOT_DIR=$PWD \
+  ./tools/scripts/versal2/qemu/test_qemu.sh
+```
+
+A GitHub workflow (`.github/workflows/test-versal2-qemu.yml`) builds wolfBoot,
+runs the OSPI unit test, and runs the QEMU scenarios on every pull request.
+
+### Deferred to PR 2 (board)
+
+- Production boot flow: PLM/PSM/BL31 hand-off, `BOOT.BIN` / bootgen, XSA.
+- Board bring-up on the VEK385 (JTAG, voltages, MIO).
+- Optional: DMA/indirect OSPI data path, XIP, and the system watchdog (Gen 2
+  WWDT/SWDT addresses differ from Gen 1 and are not used in PR 1).
 
 ## Cypress PSoC-6
 

@@ -1,0 +1,335 @@
+# Versal Gen 2 (VEK385 / Cortex-A78AE) - TARGET=versal2
+#
+# QEMU verification (run 2: QEMU 11.1.3): this workflow
+#   1. builds wolfBoot for TARGET=versal2 (aarch64 cross),
+#   2. runs the host unit tests for the OSPI driver core (opcode allow-list,
+#      128 KB erase granularity, address guard, page bound, erase chunker,
+#      flash mode detection - and the optional CSU DMA read sequence in the
+#      WOLFBOOT_OSPI_DMA=1 variant),
+#   3. downloads the QEMU 11.1.3 release (SHA256 + GPG signature verified),
+#      builds it, and runs the Q2/Q4/Q5 scenarios in the `amd-versal2-virt`
+#      machine - including the Q4 flash check (ID read, 128 KB sector erase,
+#      pattern write, readback; optional CSU DMA reads) and the Q5e real
+#      power-cut test (QEMU killed mid-update, restarted from the same
+#      flash file).
+#
+# QEMU 11.1.3 is the first stable release that ships the amd-versal2-virt
+# machine and the (upstreamed) Versal OSPI + CSU DMA models; the run-1
+# approach (QEMU 10.2.0 + a backported OSPI patch) is no longer needed.
+#
+# NOTE: this workflow has NOT yet run on GitHub (the PR is developed
+# unattended); the exact steps were executed locally and the output is
+# recorded in BUILD.md (Run 2, section 7).
+#
+# No board hardware is involved; nothing here touches eFUSEs, SLCR, voltages
+# or the ZynqMP RPU. See BUILD.md and tools/scripts/versal2/ for details.
+
+name: Versal2 (VEK385) QEMU test
+
+on:
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  # Fast, reliable regression: the target must build, and the OSPI driver
+  # core (extracted verbatim from hal/versal2.c) must pass its host tests.
+  build-and-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: install req
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install --no-install-recommends -y -q -o Acquire::Retries=3 \
+            gcc-aarch64-linux-gnu ninja-build meson check subunit pkg-config python3
+
+      - name: build wolfBoot for TARGET=versal2
+        run: |
+          cp config/examples/versal2_vek385.config .config
+          make clean TARGET=versal2
+          make TARGET=versal2
+          test -s wolfboot.elf
+
+      # Build the DEBUG_UART_NUM=0 (UART0, 0xF1920000) variant too: the
+      # config default is UART1 (the VEK385 console); both must build.
+      - name: build the DEBUG_UART_NUM=0 (UART0) wolfBoot variant
+        run: |
+          set -euxo pipefail
+          sed 's/-DDEBUG_UART_NUM=1/-DDEBUG_UART_NUM=0/' \
+            config/examples/versal2_vek385.config > .config
+          make clean TARGET=versal2
+          make TARGET=versal2
+          test -s wolfboot.elf
+
+      - name: run OSPI driver-core unit tests (STIG + DMA variants)
+        run: |
+          set -euxo pipefail
+          cd tools/unit-tests
+          make unit-versal2-ospi unit-versal2-ospi-dma \
+               unit-versal2-uart unit-versal2-uart-uart0
+          ./unit-versal2-ospi
+          # Run-1 convention, restored in run 3: run the OSPI test with a
+          # small SWAP sector. The binary reads $WOLFBOOT_SECTOR_SIZE at
+          # run time (unit-versal2-ospi.c test_sector_size()) and feeds it
+          # to the real driver core's guard, so this exercises a 1 KB
+          # SWAP partition geometry.
+          WOLFBOOT_SECTOR_SIZE=0x400 ./unit-versal2-ospi
+          ./unit-versal2-ospi-dma
+
+      - name: run the PL011 baud-divisor unit tests (UART1 + UART0)
+        run: |
+          set -euxo pipefail
+          cd tools/unit-tests
+          ./unit-versal2-uart
+          ./unit-versal2-uart-uart0
+
+  # Heavy: build QEMU 11.1.3 (verified release) and run the Q2/Q4/Q5
+  # scenarios in the amd-versal2-virt machine.
+  qemu:
+    runs-on: ubuntu-latest
+    # Run 16: 60 -> 90 min. The job downloads, configures and builds
+    # QEMU 11.1.3 (aarch64-softmmu) plus wolfBoot, then runs the 24-check
+    # upstream suite (each check boots a TCG VM); on a 2-vCPU runner the
+    # build is the dominant step and 60 min left too little margin.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: install req
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -o Acquire::Retries=3
+          # Run 16: added libpixman-1-dev - the QEMU system-emulator build
+          # links pixman (the locally verified QEMU 11.1.3 build found
+          # pixman-1 0.44.0; the runner image does not preinstall the dev
+          # package). Without it meson falls back to a headless build with
+          # no UI backends; installing it keeps the CI binary identical to
+          # the locally verified one.
+          sudo apt-get install --no-install-recommends -y -q -o Acquire::Retries=3 \
+            gcc-aarch64-linux-gnu ninja-build meson check subunit pkg-config python3 \
+            libslirp-dev libglib2.0-dev libpixman-1-dev libberkeley-db0 git gnupg
+
+      # QEMU 11.1.3 release tarball, integrity-checked:
+      #   SHA256 5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22
+      #   GPG signature qemu-11.1.3.tar.xz.sig, verified against the public
+      #   key of Michael Roth (QEMU release manager), fingerprint
+      #   CEACC9E15534EBABB82D3FA03353C9CEF108B584.
+      - name: fetch QEMU 11.1.3 release (checksum + signature verified)
+        env:
+          QEMU_VER: "11.1.3"
+          QEMU_SHA256: 5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22
+          QEMU_KEY_FPR: CEACC9E15534EBABB82D3FA03353C9CEF108B584
+        run: |
+          set -euxo pipefail
+          curl -fsSLO "https://download.qemu.org/qemu-${QEMU_VER}.tar.xz"
+          curl -fsSLO "https://download.qemu.org/qemu-${QEMU_VER}.tar.xz.sig"
+          echo "${QEMU_SHA256}  qemu-${QEMU_VER}.tar.xz" | sha256sum --check
+          gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$QEMU_KEY_FPR"
+          gpg --verify "qemu-${QEMU_VER}.tar.xz.sig" "qemu-${QEMU_VER}.tar.xz"
+
+      - name: build QEMU 11.1.3 (aarch64-softmmu only)
+        run: |
+          set -euxo pipefail
+          tar xf qemu-11.1.3.tar.xz
+          cd qemu-11.1.3
+          # Run 16 fix: the target list was `arm-softmmu` (32-bit arm guest);
+          # with it QEMU builds `qemu-system-arm` and the ninja target
+          # `qemu-system-aarch64` does not exist, so the job failed at the
+          # `ninja` step. (The amd-versal2-virt check below is correct: the
+          # clean 11.1.3 binary does ship that machine.)
+          ./configure --target-list=aarch64-softmmu --disable-werror \
+            --disable-docs --disable-virtfs --disable-capstone
+          ninja -j"$(nproc)" qemu-system-aarch64
+          ./build/qemu-system-aarch64 --version
+          ./build/qemu-system-aarch64 -M help | grep -q amd-versal2-virt
+
+      - name: build wolfBoot for TARGET=versal2
+        run: |
+          set -euxo pipefail
+          cp config/examples/versal2_vek385.config .config
+          make clean TARGET=versal2
+          make TARGET=versal2
+          test -s wolfboot.elf
+
+      - name: build trampoline, Q4 flash-test ELFs and signed test images
+        run: |
+          set -euxo pipefail
+          # run 16 fix: `stage/` is untracked (build artifacts only), so a
+          # fresh checkout has no tools/scripts/versal2/qemu/stage/ and the
+          # -o ../stage/tramp.elf link step failed. Create it first.
+          mkdir -p tools/scripts/versal2/qemu/stage
+          cd tools/scripts/versal2/qemu/trampoline
+          aarch64-linux-gnu-gcc -nostdlib -nostartfiles -static \
+            -march=armv8-a -T tramp.ld -o ../stage/tramp.elf trampoline.S
+          # Q4 flash check ELFs (STIG path + CSU DMA variant)
+          make -C ../q4
+          make -C ../q4 dma
+          cd "$GITHUB_WORKSPACE"
+          export IMAGE_HEADER_SIZE=512 WOLFBOOT_PARTITION_SIZE=0x2C00000 \
+                 WOLFBOOT_SECTOR_SIZE=0x10000
+          make -C test-app clean TARGET=versal2 WOLFBOOT_VERSION=1
+          make -C test-app TARGET=versal2 WOLFBOOT_VERSION=1
+          tools/keytools/sign --ecc384 --sha384 \
+            test-app/image.elf wolfboot_signing_private_key.der 1
+          cp test-app/image_v1_signed.bin \
+            tools/scripts/versal2/qemu/stage/img_v1_signed.bin
+          make -C test-app clean TARGET=versal2 WOLFBOOT_VERSION=2
+          make -C test-app TARGET=versal2 WOLFBOOT_VERSION=2
+          tools/keytools/sign --ecc384 --sha384 \
+            test-app/image.elf wolfboot_signing_private_key.der 2
+          cp test-app/image_v2_signed.bin \
+            tools/scripts/versal2/qemu/stage/img_v2_signed.bin
+
+      - name: run QEMU Q2/Q4/Q5 scenarios
+        run: |
+          set -euxo pipefail
+          QEMU="$PWD/qemu-11.1.3/build/qemu-system-aarch64" \
+            WOLFBOOT_DIR="$PWD" TIMEOUT=90 \
+            ./tools/scripts/versal2/qemu/test_qemu.sh
+
+  # Run 15: real TF-A BL31 -> wolfBoot on AMD's QEMU fork (Xilinx/qemu,
+  # branch xlnx_rel_v2026.1.1). The machine is arm-generic-fdt (the LMB
+  # DTB machine from Xilinx/qemu-devicetrees); the APU cores are released
+  # from CRF warm reset by the test script (the PLM does this on silicon);
+  # the console is the DTB's UART1 = chardev "serial3". No linux=on.
+  # Model limitation (run 15 evidence, q8-qemu-report.md): the fork's
+  # CSU-DMA OSPI read path does not complete, so --tfa mode runs the
+  # WOLFBOOT_OSPI_DMA=0 (STIG) wolfBoot builds and reports the Q4 DMA
+  # check as a documented model limitation (the upstream `qemu` job above
+  # still runs the DMA checks on clean QEMU 11.1.3).
+  versal2-tfa:
+    name: "Versal2 TF-A boot (AMD QEMU fork)"
+    runs-on: ubuntu-latest
+    # Run 16: 90 -> 120 min. Fresh-clone build of the Xilinx QEMU fork
+    # (aarch64-softmmu), the VEK385 devicetree, TF-A BL31 and wolfBoot, then
+    # the 28-check --tfa suite (each check boots a TCG VM); a local 8-core
+    # dry run of the same step order (tools-run2/ci_local_versal2_tfa.sh,
+    # run 16) measured the per-step wall times this budget is based on.
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: install req
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -o Acquire::Retries=3
+          # Run 16: added libpixman-1-dev - the Xilinx QEMU fork's
+          # system-emulator build links pixman (the locally verified build
+          # found pixman-1 0.44.0; the runner image does not preinstall
+          # the dev package). Without it meson falls back to a headless
+          # build with no UI backends; installing it keeps the CI binary
+          # identical to the locally verified one.
+          sudo apt-get install --no-install-recommends -y -q -o Acquire::Retries=3 \
+            gcc-aarch64-linux-gnu ninja-build meson pkg-config python3 \
+            libslirp-dev libglib2.0-dev libpixman-1-dev libberkeley-db0 \
+            git dtc libgcrypt20-dev
+
+      # Pinned sources (run 15 evidence):
+      #   Xilinx/qemu @ 09c90f09b99af539a56b25fd91e005e1884e8d18
+      #   (branch xlnx_rel_v2026.1.1, builds as "QEMU emulator version 8.2.7")
+      #   Xilinx/qemu-devicetrees @ d55f7059c6d9fc7299c644b398dfda7d2aab1b50
+      #   ARM-software/arm-trusted-firmware @ da5a281eeb92cce4a3403f1d28c53672537d4e99
+      - name: build Xilinx QEMU fork (aarch64-softmmu only)
+        env:
+          XILINX_QEMU_COMMIT: 09c90f09b99af539a56b25fd91e005e1884e8d18
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/Xilinx/qemu.git xlnx-qemu
+          cd xlnx-qemu
+          git checkout "$XILINX_QEMU_COMMIT"
+          mkdir -p build
+          cd build
+          # Run 16 fixes: the target list was `arm-softmmu` (32-bit arm
+          # guest) - with it the ninja target `qemu-system-aarch64` does not
+          # exist and the job failed at `ninja`. The verified local fork
+          # build (run 14/15, sha256 487ee11b7a3b...) was configured with
+          # aarch64-softmmu and gcrypt enabled; mirror it (--enable-gcrypt ->
+          # libgcrypt20-dev above).
+          ../configure --target-list=aarch64-softmmu --disable-werror \
+            --disable-docs --disable-virtfs --disable-capstone --enable-gcrypt
+          ninja -j"$(nproc)" qemu-system-aarch64
+          ./qemu-system-aarch64 --version
+          ./qemu-system-aarch64 -M help | grep -q arm-generic-fdt
+
+      - name: build LMB devicetrees (non-cosim VEK385 DTB)
+        env:
+          QEMU_DT_COMMIT: d55f7059c6d9fc7299c644b398dfda7d2aab1b50
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/Xilinx/qemu-devicetrees.git qemu-devicetrees
+          cd qemu-devicetrees
+          git checkout "$QEMU_DT_COMMIT"
+          make LATEST/SINGLE_ARCH/board-versal2-psxc-vek385-revB.dtb
+          test -s LATEST/SINGLE_ARCH/board-versal2-psxc-vek385-revB.dtb
+
+      - name: build TF-A BL31 (versal2, RESET_TO_BL31, no source edits)
+        env:
+          TFA_COMMIT: da5a281eeb92cce4a3403f1d28c53672537d4e99
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/ARM-software/arm-trusted-firmware.git tf-a
+          cd tf-a
+          git checkout "$TFA_COMMIT"
+          make PLAT=versal2 RESET_TO_BL31=1 TFA_NO_PM=1 CONSOLE=pl011_1 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               ERRATA_A78_AE_3888018=0 ERRATA_A78_AE_4302973=0 \
+               WORKAROUND_CVE_2024_5660=0 \
+               bl31
+          test -s build/versal2/release/bl31/bl31.elf
+
+      - name: build wolfBoot for TARGET=versal2
+        run: |
+          set -euxo pipefail
+          cp config/examples/versal2_vek385.config .config
+          make clean TARGET=versal2
+          make TARGET=versal2
+          test -s wolfboot.elf
+
+      - name: build trampoline, Q4 flash-test ELFs and signed test images
+        run: |
+          set -euxo pipefail
+          # run 16 fix: `stage/` is untracked (build artifacts only), so a
+          # fresh checkout has no tools/scripts/versal2/qemu/stage/ and the
+          # -o ../stage/tramp.elf link step failed. Create it first.
+          mkdir -p tools/scripts/versal2/qemu/stage
+          cd tools/scripts/versal2/qemu/trampoline
+          aarch64-linux-gnu-gcc -nostdlib -nostartfiles -static \
+            -march=armv8-a -T tramp.ld -o ../stage/tramp.elf trampoline.S
+          make -C ../q4
+          make -C ../q4 dma
+          cd "$GITHUB_WORKSPACE"
+          export IMAGE_HEADER_SIZE=512 WOLFBOOT_PARTITION_SIZE=0x2C00000 \
+                 WOLFBOOT_SECTOR_SIZE=0x10000
+          make -C test-app clean TARGET=versal2 WOLFBOOT_VERSION=1
+          make -C test-app TARGET=versal2 WOLFBOOT_VERSION=1
+          tools/keytools/sign --ecc384 --sha384 \
+            test-app/image.elf wolfboot_signing_private_key.der 1
+          cp test-app/image_v1_signed.bin \
+            tools/scripts/versal2/qemu/stage/img_v1_signed.bin
+          make -C test-app clean TARGET=versal2 WOLFBOOT_VERSION=2
+          make -C test-app TARGET=versal2 WOLFBOOT_VERSION=2
+          tools/keytools/sign --ecc384 --sha384 \
+            test-app/image.elf wolfboot_signing_private_key.der 2
+          cp test-app/image_v2_signed.bin \
+            tools/scripts/versal2/qemu/stage/img_v2_signed.bin
+
+      - name: run TF-A QEMU suite (--tfa mode, real BL31, no linux=on)
+        run: |
+          set -euxo pipefail
+          ./tools/scripts/versal2/qemu/test_qemu.sh \
+            --tfa "$PWD/tf-a/build/versal2/release/bl31/bl31.elf" \
+            --qemu "$PWD/xlnx-qemu/build/qemu-system-aarch64" \
+            --hw-dtb "$PWD/qemu-devicetrees/LATEST/SINGLE_ARCH/board-versal2-psxc-vek385-revB.dtb" \
+            TIMEOUT=90
