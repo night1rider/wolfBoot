@@ -4936,10 +4936,10 @@ sudo fdisk -l /dev/sdX
 
 ## Versal Gen 2 VEK385
 
-> **QEMU only (for now):** this target is brought up and tested in QEMU's
-> `amd-versal2-virt` machine (QEMU 11.1.3). Board support (XSA, `BOOT.BIN`,
-> JTAG, and the PLM/PSM/BL31 hand-off on hardware) is not yet included. See
-> `tools/scripts/versal2/` for the QEMU test scripts.
+> **QEMU and board:** this target is tested in QEMU's `amd-versal2-virt`
+> machine (QEMU 11.1.3) and on a VEK385 Rev B, over JTAG and from the OSPI
+> flash (see "Board (JTAG)", "Board (OSPI boot)" and "Board (Linux)"
+> below). See `tools/scripts/versal2/` for the scripts.
 
 AMD Versal AI Edge / Prime Gen 2 (VEK385) Evaluation Kit - Adaptive SoC with dual
 Cortex-A78AE application processors. `TARGET=versal2` is a sibling of the Gen 1
@@ -5068,10 +5068,120 @@ QEMU=/path/to/qemu-system-aarch64 \
 A GitHub workflow (`.github/workflows/test-versal2-qemu.yml`) builds wolfBoot,
 runs the board flash code unit test, and runs the QEMU scenarios on every pull request.
 
+**TF-A (BL31).** Use upstream TF-A built with `MEM_BASE=0x1600000
+MEM_SIZE=0x200000`, so BL31 runs where it runs on the board (the default
+`0xBBF00000` is above the board's 2 GB low DDR). The workflow's TF-A job
+uses that address. AMD's prebuilt TF-A does not work here: it starts OP-TEE
+at `0x1800000` before BL31 hands off, so wolfBoot never runs without OP-TEE.
+On the board, build TF-A without `TFA_NO_PM=1`: QEMU has no PLM to answer
+power-management calls, so QEMU cannot test that part.
+
+```sh
+make PLAT=versal2 RESET_TO_BL31=1 CROSS_COMPILE=aarch64-linux-gnu- \
+     MEM_BASE=0x1600000 MEM_SIZE=0x200000 bl31
+```
+
+### Board (JTAG)
+
+Tested on a VEK385 Rev B with Vitis 2026.1, boot mode JTAG (SW1 = `0000`):
+PLM -> TF-A BL31 (EL3) -> wolfBoot (EL2) -> test-app (EL2), with wolfBoot
+reading and verifying the signed image from the board's OSPI flash.
+
+1. Build TF-A for the board as in "TF-A (BL31)" above, without
+   `TFA_NO_PM=1` (the PLM answers the power calls on the board).
+2. Build wolfBoot with `config/examples/versal2_vek385.config`.
+3. Put `system.dtb` (the board DTB), `bl31.elf` and `wolfboot.elf` in the
+   XSA's `pdi_files` folder and build the PDI there with
+   `tools/scripts/versal2/board/versal2_boot.bif`:
+   `bootgen -arch versal_2ve_2vm -image versal2_boot.bif -w -o boot.pdi`.
+4. `xsdb tools/scripts/versal2/board/program_jtag.tcl boot.pdi`. The
+   wolfBoot console is UART1 (the third FT4232 port); BL31 prints on
+   UART0.
+
+**Writing the test images** uses `tools/scripts/versal2/board/ospi_tool`,
+a small program that takes wolfBoot's EL2 slot in the BIF. It is built
+from the same flash code as wolfBoot (the `ext_flash` code of
+`hal/wolfhal.c` on the VEK385 wolfHAL drivers), so the BOOT/UPDATE/SWAP
+partition guard applies:
+
+- `ospi_scan.elf` reads BOOT, UPDATE, both DTS slots and SWAP and reports
+  whether each is erased, with a CRC32. It also checks that a DMA read
+  matches a STIG read. It does not write.
+- `ospi_map.elf` (`make map`) reads the whole flash and lists the used
+  ranges and any boot headers. It does not write.
+- `ospi_write_boot.elf` / `ospi_write_update.elf` write the signed image
+  that the BIF loads at `0x30000000` (add a `type = raw, load =
+  0x30000000` partition before the EL2 one), then read it back. They erase
+  only the sectors they write, never the partition's last sector.
+
+The board results so far: banner and flash ID, the read-only scan (all
+wolfBoot areas erased), v1 written to BOOT and booted, v2 written to
+UPDATE and booted (higher version), and a corrupt v3 refused with a fall
+back to v1. `tools/scripts/versal2/qemu/test_ospi_tool.sh` runs the same
+steps in QEMU, in CI.
+
+### Board (OSPI boot)
+
+The same boot image also boots from the OSPI flash. The VEK385 flash
+holds no AMD Image Selector, so `BOOT.BIN` goes at offset 0, below the
+BOOT partition. Write it with AMD's `program_flash` (boot mode JTAG):
+`program_flash -f boot.pdi -offset 0 -pdi init.pdi -flash_type
+ospi-x8-single -verify`, where `init.pdi` is the XSA's images without
+the APU ones. Then boot from OSPI (SW1 = `0001`).
+
+The PLM leaves the flash in octal DDR mode after an OSPI boot, so it does
+not answer wolfBoot's 1-bit ID read. The wolfHAL NOR driver then resets it
+with 66h/99h in octal DDR (`WHAL_SPIMEM_NOR_FLAG_RESET_OCTAL_DTR`: octal DTR
+operations, set per command in the `spimem` op), then in 1-bit, and reads
+the ID again. The controller is already in 1-bit: the wolfHAL Cadence
+driver's Init turns off the DTR and PHY settings the PLM left.
+
+To boot from OSPI, set SW1 to ON, ON, ON, OFF (`0001`, UG1712 Table 6)
+and power cycle the board. Tested on a VEK385 Rev B with a power cycle:
+the PLM printed `BOOTMODE: 0x8` and `Loading PDI from OSPI`, and wolfBoot
+refused a corrupt v3 in UPDATE and started v1.
+
+### Board (Linux)
+
+wolfBoot built with `config/examples/versal2_vek385_linux.config` boots a
+signed FIT (kernel, DTB, initramfs) from the BOOT partition.
+
+1. Make the board DTB from AMD's VEK385 Rev B Linux DTB (the `system.dtb`
+   of the board BIF):
+   `tools/scripts/versal2/board/mk_board_dtb.sh <AMD DTB> kernel.dtb`.
+   It changes only the command line (console on UART1), the memory (low
+   2 GB only), a reserved region for BL31 at `0x1600000`, and the OSPI
+   partitions (BOOT, UPDATE, SWAP).
+2. Build and sign the FIT with `tools/scripts/versal2/qemu/linux/mk_fit.sh`,
+   with `KERNEL_DTB` set to the board DTB, `INITRAMFS` set to the plain
+   initramfs, and `FIT_V2=0`.
+3. Write the signed FIT to BOOT with `ospi_write_boot.elf` (the FIT is the
+   raw partition at `0x30000000`).
+4. Boot wolfBoot (Linux config) over JTAG as in "Board (JTAG)".
+
+Tested on a VEK385 Rev B over JTAG: wolfBoot refused a corrupt v3 in
+UPDATE, verified the 14 MB v1 FIT and started Linux 6.18.10 (AMD EDF
+kernel). Linux started all 8 A78 cores through BL31, created the
+`boot`, `update` and `swap` MTD partitions and reached the initramfs shell.
+The same wolfBoot (Linux config) as `BOOT.BIN` at offset 0 also booted
+Linux to the shell from the OSPI flash after a power cycle (SW1 = `0001`).
+
+Update tests on the board, booting from OSPI, with `wbmtd` in the
+initramfs (`tools/scripts/versal2/qemu/linux/wbmtd`):
+
+- Update: `wbmtd update /v2.fit` sets UPDATE to UPDATING. After a reboot
+  wolfBoot boots v2 from UPDATE and sets it to TESTING.
+- Confirm: `wbmtd confirm` in v2 sets UPDATE to SUCCESS. v2 boots again
+  after a reboot.
+- No rollback (default config): an unconfirmed v2 boots again with
+  "Rollback to lower version not allowed".
+- Rollback (`ALLOW_DOWNGRADE=1` build): an unconfirmed v2 boots once. On
+  the next boot wolfBoot erases UPDATE and boots v1.
+- Refused update: `wbmtd update /v2.fit --corrupt-sig`. wolfBoot prints
+  "Verifying signature...FAILED" and boots v1.
+
 ### Not yet supported (board)
 
-- Production boot flow: PLM/PSM/BL31 hand-off, `BOOT.BIN` / bootgen, XSA.
-- Board bring-up on the VEK385 (JTAG, voltages, MIO).
 - Optional: indirect OSPI write path, XIP, and the system watchdog (Gen 2
   WWDT/SWDT addresses differ from Gen 1 and are not supported yet).
 

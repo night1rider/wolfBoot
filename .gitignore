@@ -500,6 +500,9 @@ tools/scripts/versal2/qemu/trampoline/tramp_new.elf
 tools/scripts/versal2/qemu/q4/*.o
 tools/scripts/versal2/qemu/q4/*.elf
 tools/scripts/versal2/qemu/q4/wolfhal_ext_flash_extract.h
+tools/scripts/versal2/board/ospi_tool/*.o
+tools/scripts/versal2/board/ospi_tool/*.elf
+tools/scripts/versal2/board/ospi_tool/wolfhal_ext_flash_extract.h
 
 # wolfHSM STM32H5 TZ demo build output
 port/stmicro/stm32h5-tz-wolfhsm/out/

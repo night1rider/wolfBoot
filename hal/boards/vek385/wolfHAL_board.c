@@ -116,8 +116,8 @@ whal_SpiMem g_wbOspi = {
     },
 };
 
-/* MT35XU02G, 1-bit, 4-byte opcodes: read 13h, program 12h, erase DCh 128 KB
- * (Table 21). Only this ID; reset and volatile 1-bit (81h), never B1h. */
+/* MT35XU02G, 1-bit, 4-byte opcodes (Table 21). Only this ID; resets (octal
+ * DDR first: the PLM leaves it there) and volatile 1-bit (81h), never B1h. */
 static whal_Timeout vek385_flash_timeout = {
     VEK385_FLASH_TIMEOUT_US, 0, vek385_tick_us
 };
@@ -133,6 +133,7 @@ whal_Flash g_wbExtFlash = {
         .progOp = OSPI_OP_PAGE_PROGRAM4,
         .eraseOp = OSPI_OP_ERASE4_128K,
         .flags = WHAL_SPIMEM_NOR_FLAG_FSR | WHAL_SPIMEM_NOR_FLAG_RESET |
+                 WHAL_SPIMEM_NOR_FLAG_RESET_OCTAL_DTR |
                  WHAL_SPIMEM_NOR_FLAG_MICRON_VCFG_1BIT,
         .id = VERSAL2_FLASH_JEDEC_ID,
         .timeout = &vek385_flash_timeout,
