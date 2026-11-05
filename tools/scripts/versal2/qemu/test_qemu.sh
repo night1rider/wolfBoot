@@ -61,6 +61,10 @@
 #
 #   ./test_qemu.sh --tfa <bl31.elf> --qemu <amd-qemu> --hw-dtb <dtb>
 #
+# With --bl32 <tee.elf>, OP-TEE also runs: BL31 (SPD=opteed) -> OP-TEE
+# (secure EL1) -> wolfBoot (EL2). The DTB is also loaded at 0x1000000,
+# where TF-A and OP-TEE read it, and each boot must show OP-TEE start.
+#
 # In the AMD fork the CSU-DMA OSPI read path does not complete (the Q4
 # DMA ELF never prints "Q4 DMA-1K READBACK"/"Q4-TEST-DONE"), so --tfa
 # mode runs the suite with WOLFBOOT_OSPI_DMA=0 (STIG) wolfBoot builds and
@@ -102,11 +106,13 @@ FAIL=0
 TFA_MODE=0
 TFA_BL31=""
 TFA_DTB=""
+TFA_BL32=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --tfa)    TFA_MODE=1; TFA_BL31="${2:-}"; shift 2 ;;
     --qemu)   QEMU="${2:-}"; shift 2 ;;
     --hw-dtb) TFA_DTB="${2:-}"; shift 2 ;;
+    --bl32)   TFA_BL32="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -115,6 +121,14 @@ if [ "$TFA_MODE" = "1" ]; then
     { echo "--tfa: bl31.elf missing: $TFA_BL31"; exit 2; }
   [ -n "$TFA_DTB" ]  && [ -f "$TFA_DTB" ]  || \
     { echo "--hw-dtb: DTB missing: $TFA_DTB"; exit 2; }
+fi
+# Extra QEMU loaders for OP-TEE: tee.elf, and the DTB at 0x1000000.
+BL32_ARGS=()
+if [ -n "$TFA_BL32" ]; then
+  [ "$TFA_MODE" = "1" ] || { echo "--bl32 needs --tfa"; exit 2; }
+  [ -f "$TFA_BL32" ] || { echo "--bl32: tee.elf missing: $TFA_BL32"; exit 2; }
+  BL32_ARGS=(-device "loader,file=$TFA_BL32"
+             -device "loader,file=$TFA_DTB,addr=0x1000000,force-raw=on")
 fi
 
 # OSPI flash layout. Must match config/examples/versal2_vek385.config.
@@ -151,6 +165,7 @@ run_qemu() {
     timeout -s KILL "$TIMEOUT" "$QEMU" \
       -M arm-generic-fdt -bios none -m 4G -dtb "$TFA_DTB" \
       -device loader,file="$TFA_BL31",cpu-num=0 \
+      "${BL32_ARGS[@]}" \
       -device loader,file="$wb",addr=0x40000000 \
       -device loader,data=0x3cf,data-len=4,addr=0xec200300 \
       -device loader,data=0x3cf,data-len=4,addr=0xec200304 \
@@ -204,6 +219,7 @@ run_qemu_bg() {
     exec "$QEMU" \
       -M arm-generic-fdt -bios none -m 4G -dtb "$TFA_DTB" \
       -device loader,file="$TFA_BL31",cpu-num=0 \
+      "${BL32_ARGS[@]}" \
       -device loader,file="$wb",addr=0x40000000 \
       -device loader,data=0x3cf,data-len=4,addr=0xec200300 \
       -device loader,data=0x3cf,data-len=4,addr=0xec200304 \
@@ -232,6 +248,36 @@ check_tfa_chain() {
   else
     fail "$2: TF-A chain missing (log: $1)"
   fi
+  # With --bl32, OP-TEE must start and pass control on to wolfBoot.
+  if [ -n "$TFA_BL32" ]; then
+    if grep -q "OP-TEE OS Running on Platform AMD Versal Gen 2" "$1" && \
+       grep -q "Primary CPU switching to normal world boot" "$1"; then
+      ok "$2: OP-TEE (secure EL1) started and returned to TF-A"
+    else
+      fail "$2: OP-TEE did not start (log: $1)"
+    fi
+  fi
+}
+
+check_optee_memmap() {
+  # check_optee_memmap <config>: wolfBoot's DTB copy (1 MB max), image
+  # staging (header + partition) and code must be clear of OP-TEE's
+  # memory (OP-TEE plat-versal2 default CFG_TZDRAM: 0x1800000, 128 MB).
+  local cfg="$1" tz_lo=$((0x1800000)) tz_hi=$((0x1800000 + 0x8000000))
+  local v a lo hi
+  for v in WOLFBOOT_LOAD_DTS_ADDRESS:0x100000 \
+           WOLFBOOT_LOAD_ADDRESS:$((IMG_SIZE + 0x200)) \
+           WOLFBOOT_ORIGIN:0x200000; do
+    a="$(sed -n "s/^${v%%:*}?*=\(0x[0-9A-Fa-f]*\).*/\1/p" "$cfg" | head -1)"
+    [ -n "$a" ] || { fail "OP-TEE map: ${v%%:*} not in $cfg"; continue; }
+    lo=$((a)); hi=$((a + ${v##*:}))
+    if [ "${v%%:*}" = "WOLFBOOT_LOAD_ADDRESS" ]; then lo=$((a - 0x200)); fi
+    if [ "$lo" -lt "$tz_hi" ] && [ "$hi" -gt "$tz_lo" ]; then
+      fail "OP-TEE map: ${v%%:*}=$a overlaps OP-TEE (0x1800000-0x97FFFFF)"
+    else
+      ok "OP-TEE map: ${v%%:*}=$a is clear of OP-TEE memory"
+    fi
+  done
 }
 
 make_flash() {
@@ -407,6 +453,12 @@ fi
 # --tfa mode: DMA reads do not finish on the AMD QEMU fork, so every
 # scenario uses a STIG build (WOLFBOOT_OSPI_DMA=0) made under OUTDIR.
 # The repo's wolfboot.elf is not changed.
+if [ -n "$TFA_BL32" ]; then
+  log "OP-TEE memory map: wolfBoot must stay out of OP-TEE's memory"
+  check_optee_memmap "$WOLFBOOT_DIR/config/examples/versal2_vek385.config"
+  check_optee_memmap \
+    "$WOLFBOOT_DIR/config/examples/versal2_vek385_linux.config"
+fi
 if [ "$TFA_MODE" = "1" ]; then
   TFA_WB_ELF="$OUTDIR/wolfboot_tfa_stig.elf"
   log "TFA mode: building STIG wolfBoot (WOLFBOOT_OSPI_DMA=0) under OUTDIR"

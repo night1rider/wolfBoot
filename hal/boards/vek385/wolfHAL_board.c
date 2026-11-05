@@ -261,6 +261,25 @@ void hal_prepare_boot(void)
      * caches. */
 }
 
+#if defined(WOLFBOOT_VERSAL2_EL3) && defined(__WOLFBOOT)
+extern void el3_jump_to_entry(uintptr_t entry);
+extern uint8_t _end[];  /* linker symbol: end of wolfBoot BSS */
+
+/* Jump to BL31 at EL3; BL31 then starts BL33 at EL2 by itself.
+ * el3_jump_to_entry() cleans the caches and turns the MMU off first. */
+void versal2_bl31_handoff(uintptr_t bl31_entry, uintptr_t bl33_entry)
+{
+    if (versal2_el3_handoff_ok(bl31_entry, bl33_entry, VERSAL2_BL33_BASE,
+            WOLFBOOT_ORIGIN, (uintptr_t)_end) == 0) {
+        wolfBoot_printf("EL3: refused BL31 %p / BL33 %p (BL33 must be "
+                        "0x%lx)\n", (void*)bl31_entry, (void*)bl33_entry,
+                        (unsigned long)VERSAL2_BL33_BASE);
+        wolfBoot_panic();
+    }
+    el3_jump_to_entry(bl31_entry);
+}
+#endif /* WOLFBOOT_VERSAL2_EL3 && __WOLFBOOT */
+
 #ifdef MMU
 void* hal_get_dts_address(void)
 {

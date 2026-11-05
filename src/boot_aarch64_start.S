@@ -2071,7 +2071,7 @@ imx95_catch_hex:
 #endif /* TARGET_imx95_a55 && IMX95_HANDOFF_DUMP */
 #endif /* EL2_HYPERVISOR || WOLFBOOT_AARCH64_MMU_TEARDOWN */
 
-#if defined(WOLFBOOT_ZYNQMP_FSBL)
+#if defined(WOLFBOOT_ZYNQMP_FSBL) || defined(WOLFBOOT_VERSAL2_EL3)
 /*
  * void el3_jump_to_entry(uintptr_t entry)
  *
@@ -2155,6 +2155,6 @@ el3_jump_to_entry:
 
     /* ---- 4. Branch to BL31 (does not return) ---- */
     br      x19
-#endif /* WOLFBOOT_ZYNQMP_FSBL */
+#endif /* WOLFBOOT_ZYNQMP_FSBL || WOLFBOOT_VERSAL2_EL3 */
 
 .end

@@ -39,7 +39,7 @@
 /* SPSR: EL2h (mode 0b1001) with DAIF masked, the BL31 -> BL33 state. */
 	.equ SPSR_EL2H, 0x3C9
 /* EL3 exception stack top, in QEMU low DDR. It is clear of the DTB
- * (0x1800000) and the kernel area (0x20000000 and up). */
+ * (0x1F000000) and the kernel area (0x20000000 and up). */
 	.equ EL3_STACK_TOP, 0x880000
 /* EL2 exception stack top. SP_EL2 resets to 0, so without this an EL2
  * trap would fault on its first stack write. */

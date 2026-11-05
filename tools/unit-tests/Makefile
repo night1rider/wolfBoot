@@ -165,6 +165,7 @@ TESTS+=unit-versal-ext-write
 TESTS+=unit-versal-wdt
 TESTS+=unit-versal-uart-rx
 TESTS+=unit-wolfhal-ext-flash
+TESTS+=unit-versal2-el3
 TESTS+=unit-raspi3-uart-rx
 TESTS+=unit-mpfs-wdt
 TESTS+=unit-t10xx-qe-firmware
@@ -1899,6 +1900,12 @@ wolfhal_ext_flash_extract.h: ../../hal/wolfhal.c
 unit-wolfhal-ext-flash: unit-wolfhal-ext-flash.c wolfhal_ext_flash_extract.h
 	gcc -o $@ unit-wolfhal-ext-flash.c $(UNIT_WOLFHAL)/src/flash/flash.c \
 	  -I$(UNIT_WOLFHAL) $(CFLAGS) $(LDFLAGS)
+
+# unit-versal2-el3 tests the EL3 -> BL31 handoff check in hal/versal2.h,
+# built with the same flags as make VERSAL2_EL3=1.
+unit-versal2-el3: unit-versal2-el3.c ../../hal/versal2.h
+	gcc -o $@ unit-versal2-el3.c -DWOLFBOOT_VERSAL2_EL3 \
+	  -DVERSAL2_BL33_BASE=0x30000000 -I../../hal $(CFLAGS) $(LDFLAGS)
 
 # unit-raspi3-uart-rx runs the real uart_rx() from hal/raspi3.c, the
 # other PL011 console in the tree, against an emulated register block.

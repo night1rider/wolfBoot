@@ -705,5 +705,6 @@ tools/unit-tests/stm32wb_write_extract.h
 tools/unit-tests/t10xx_flash_status_extract.h
 tools/unit-tests/ti_hercules_erase_extract.h
 tools/unit-tests/versal_host_write.c
+tools/unit-tests/unit-versal2-el3
 # Build-identity file written next to wolfboot.elf by the versal2 QEMU tests
 wolfboot.elf.meta

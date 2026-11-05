@@ -34,8 +34,13 @@ extern "C" {
 #include <stdint.h>
 #endif /* __ASSEMBLER__ */
 
-/* BL31 owns EL3. wolfBoot runs at EL2 and starts the app at EL1. */
+/* BL31 owns EL3. wolfBoot runs at EL2 and starts the app at EL1.
+ * With VERSAL2_EL3=1, wolfBoot starts at EL3 and hands off to BL31. */
+#ifdef WOLFBOOT_VERSAL2_EL3
+#define EL3_SECURE     1
+#else
 #define EL3_SECURE     0
+#endif
 #define EL2_HYPERVISOR 1
 #define EL1_NONSECURE  1
 
@@ -95,5 +100,44 @@ extern "C" {
 #ifndef TIMER_CLK_FREQ
     #define TIMER_CLK_FREQ          100000000UL  /* 100 MHz */
 #endif
+
+/* wolfBoot at EL3 (VERSAL2_EL3=1) loads BL31 from the FIT ("atf"). TF-A
+ * takes no handoff data: it starts BL33 at PRELOADED_BL33_BASE, EL2. */
+#ifdef WOLFBOOT_VERSAL2_EL3
+#ifndef VERSAL2_BL33_BASE
+    #error "VERSAL2_EL3=1 needs VERSAL2_BL33_BASE (TF-A PRELOADED_BL33_BASE)"
+#endif
+#endif
+
+/* 1 if BL33 is where TF-A starts it and BL31 is not 0, BL33 or inside
+ * wolfBoot [wb_lo, wb_hi). Tested in unit-versal2-el3.c. */
+#ifndef __ASSEMBLER__
+static inline int versal2_el3_handoff_ok(uint64_t bl31_entry,
+                                         uint64_t bl33_entry,
+                                         uint64_t bl33_base,
+                                         uint64_t wb_lo,
+                                         uint64_t wb_hi)
+{
+    if (bl31_entry == 0) {
+        return 0;
+    }
+    if (bl33_entry != bl33_base) {
+        return 0;
+    }
+    if (bl31_entry == bl33_entry) {
+        return 0;
+    }
+    if (bl31_entry >= wb_lo) {
+        if (bl31_entry < wb_hi) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#ifdef WOLFBOOT_VERSAL2_EL3
+void versal2_bl31_handoff(uintptr_t bl31_entry, uintptr_t bl33_entry);
+#endif
+#endif /* !__ASSEMBLER__ */
 
 #endif /* _VERSAL2_H_ */
