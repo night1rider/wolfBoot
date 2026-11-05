@@ -1,0 +1,82 @@
+/dts-v1/;
+/*
+ * linux.its - U-Boot FIT source for the versal2 QEMU local Linux test,
+ * built by mk_fit.sh with `mkimage -f` (U-Boot's FIT
+ * builder; the system dtc 1.7.2 is invoked internally by mkimage and
+ * supports /incbin/).
+ *
+ * The `data = /incbin/("...")` paths carry the placeholders @BUILDDIR@
+ * (the build directory, outside the repo) and @RAMDISK@ (the initramfs
+ * filename: the FULL cpio.gz for the v1 FIT, the PLAIN cpio.gz for the
+ * v2 FIT - the v1 initramfs embeds the signed v2 FIT as /v2.fit), which
+ * mk_fit.sh substitutes before calling mkimage; the substituted file
+ * lives in the build dir, the repo keeps only the template.
+ *
+ * Subimages (addresses match config/examples/versal2_vek385_linux.config):
+ *   kernel-1  Image.gz          gzip (config GZIP=1; wolfBoot decompresses
+ *             natively)          load/entry 0x24000000 (576 MB, low RAM;
+ *                                WOLFBOOT_LOAD_KERNEL_ADDRESS=0 honors
+ *                                this load/entry)
+ *   fdt-1     kernel.dtb        no load property on purpose: wolfBoot
+ *             (QEMU base + OSPI   relocates the FIT fdt to
+ *             overlay, mk_dtb.sh) WOLFBOOT_LOAD_DTS_ADDRESS=0x1800000
+ *   ramdisk-1 initramfs.cpio.gz  gzip, load 0x30000000 (768 MB;
+ *                                WOLFBOOT_LOAD_RAMDISK_ADDRESS=0x30000000
+ *                                also overrides it)
+ *
+ * The whole signed FIT is staged by wolfBoot at WOLFBOOT_LOAD_ADDRESS
+ * (0x20000000); the signed image must fit the 44 MB BOOT/UPDATE
+ * partition (WOLFBOOT_PARTITION_SIZE=0x2C00000) - mk_fit.sh checks.
+ */
+/ {
+	description = "AMD Versal Gen 2 (VEK385) - wolfBoot local Linux test";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "AMD EDF Linux kernel (Image.gz, 6.18.10-xilinx)";
+			data = /incbin/("@BUILDDIR@/Image.gz");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "gzip";
+			load = <0x24000000>;
+			entry = <0x24000000>;
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+		fdt-1 {
+			description = "QEMU amd-versal2-virt DTB + OSPI overlay";
+			data = /incbin/("@BUILDDIR@/kernel.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+		ramdisk-1 {
+			description = "initramfs (busybox + wbmtd + mtd-utils)";
+			data = /incbin/("@BUILDDIR@/@RAMDISK@");
+			type = "ramdisk";
+			arch = "arm64";
+			os = "linux";
+			compression = "gzip";
+			load = <0x30000000>;
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+	};
+
+	configurations {
+		default = "conf-vek385";
+		conf-vek385 {
+			description = "wolfBoot Q5 local Linux test (EDF kernel)";
+			kernel = "kernel-1";
+			fdt = "fdt-1";
+			ramdisk = "ramdisk-1";
+		};
+	};
+};

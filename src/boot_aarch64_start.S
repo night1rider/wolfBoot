@@ -30,6 +30,10 @@
 #include "hal/versal.h"
 #endif
 
+#ifdef TARGET_versal2
+#include "hal/versal2.h"
+#endif
+
 #ifdef TARGET_agilex5
 #include "hal/agilex5.h"
 #endif
@@ -61,7 +65,7 @@
 /* VA region the TCR_EL{1,2,3} T0SZ values below cover. A high DDR window
  * must fit inside it; keep in step with those TCR literals. */
 #ifndef WOLFBOOT_AARCH64_VA_LIMIT
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
 #define WOLFBOOT_AARCH64_VA_LIMIT 0x100000000000  /* 2^44, TCR 0x80843514 */
 #else
 #define WOLFBOOT_AARCH64_VA_LIMIT 0x10000000000   /* 2^40, TCR 0x80823518 */
@@ -113,7 +117,7 @@
 .set L2Table,     MMUTableL2
 .set vector_base, _vector_table
 
-#if defined(TARGET_versal)
+#if defined(TARGET_versal) || defined(TARGET_versal2)
 /* Versal: RVBAR is handled by PLM, not accessible from APU in JTAG mode */
 .set counterfreq, 100000000
 #elif defined(TARGET_agilex5)
@@ -256,10 +260,21 @@ InitEL3:
      * clock and would make CNTPCT time run ~4x fast. */
     ldr    x1, =0x023E0020
     ldr    w0, [x1]
+    msr    CNTFRQ_EL0, x0
+#elif defined(TARGET_versal2)
+    /* Keep the firmware timer frequency (AM028 CNTFID0); write counterfreq
+     * only if it is 0 (the board file then warns). */
+    mrs    x0, CNTFRQ_EL0
+    cbz    x0, v2_cntfrq_fallback
+    b      v2_cntfrq_done
+v2_cntfrq_fallback:
+    ldr    x0, =counterfreq
+    msr    CNTFRQ_EL0, x0
+v2_cntfrq_done:
 #else
     ldr    x0,=counterfreq
-#endif
     msr    CNTFRQ_EL0, x0
+#endif
 #endif
 
     /* Enable hardware coherency between cores */
@@ -294,7 +309,7 @@ InitEL3:
     * Set up TCR_EL3
     * Granual Size TG0 = 00 -> 4KB
     ***************************************************/
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
     /* Versal: Physical Address Size PS = 100 -> 44bits 16TB
      *         T0SZ = 20 -> (region size 2^(64-20) = 2^44) */
     ldr    x1,=0x80843514
@@ -376,7 +391,7 @@ InitEL2:
     * Set up TCR_EL2
     * Granual Size TG0 = 00 -> 4KB
     ***************************************************/
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
     /* Versal: Physical Address Size PS = 100 -> 44bits 16TB
      *         T0SZ = 20 -> (region size 2^(64-20) = 2^44) */
     ldr    x1,=0x80843514
@@ -472,7 +487,7 @@ InitEL1:
     * Set up TCR_EL1
     * Granual Size TG0 = 00 -> 4KB
     ***************************************************/
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
     /* Versal: Physical Address Size PS = 100 -> 44bits 16TB
      *         T0SZ = 20 -> (region size 2^(64-20) = 2^44) */
     ldr    x1,=0x485800514
@@ -757,7 +772,7 @@ MMUTableL2:
 .set    SECT, SECT+0x200000
 .endr
 
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
 /* Versal: LPD/PMC peripherals at 0xF0000000 - 0xF7FFFFFF (includes QSPI @ 0xF1030000) */
 .rept   0x040                  /* 0xF000_0000 - 0xF7FF_FFFF */
 .8byte  SECT + Device          /* 128MB LPD peripherals (QSPI, I2C, etc) */
@@ -771,6 +786,19 @@ MMUTableL2:
 .endr
 #endif
 
+#if defined(TARGET_versal2)
+/* Versal Gen 2 (AM026 Table 31): 0xF8000000-0xFBFFFFFF is device memory;
+ * nothing is mapped above it. */
+.rept   0x20                   /* 0xF800_0000 - 0xFBFF_FFFF */
+.8byte  SECT + Device          /* 64MB FPD_AXI_CMN_mem */
+.set    SECT, SECT+0x200000
+.endr
+
+.rept   0x20                   /* 0xFC00_0000 - 0xFFFF_FFFF */
+.8byte  SECT + reserved        /* no Table 31 entry (fault) */
+.set    SECT, SECT+0x200000
+.endr
+#else
 .rept   0x8                    /* 0xF800_0000 - 0xF8FF_FFFF */
 .8byte  SECT + Device          /* 16MB coresight */
 .set    SECT, SECT+0x200000
@@ -805,6 +833,7 @@ converted to 62MB */
 
 .set    SECT, SECT+0x200000    /* 0xFFE0_0000 - 0xFFFF_FFFF*/
 .8byte  SECT + Memory          /* 2MB OCM/TCM */
+#endif /* TARGET_versal2 */
 #endif /* TARGET_agilex5 */
 
 #else /* TARGET_nxp_ls1028a */
@@ -968,7 +997,7 @@ MMUTableL2:
 
 .macro exception_return
     eret
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
     dsb    nsh
     isb
 #endif
@@ -990,7 +1019,7 @@ _vector_table:
     /* HW reset vector  */
     ldr    x16, =_boot
     br     x16
-#ifdef TARGET_versal
+#if defined(TARGET_versal) || defined(TARGET_versal2)
     dsb    nsh
     isb
 #endif
@@ -1745,10 +1774,18 @@ el2_to_el1_boot:
     mov    x19, x0                /* Save entry_point in x19 */
     mov    x20, x1                /* Save dts_addr in x20 */
 
-    /* 1. Configure timer access for EL1 */
+    /* 1. EL1 timer access. versal2 sets all four bits like BL31; with only
+     * bits 0-1 Linux's first timer read traps to EL2 and hangs. */
+#if defined(TARGET_versal2)
+    mrs    x0, CNTHCTL_EL2
+    /* EL1PCEN | EL1PCTEN | EL1PVCTEN | EL1PCXCTEN */
+    orr    x0, x0, #0xF
+    msr    CNTHCTL_EL2, x0
+#else
     mrs    x0, CNTHCTL_EL2
     orr    x0, x0, #3             /* EL1PCEN | EL1PCTEN - enable EL1 timer access */
     msr    CNTHCTL_EL2, x0
+#endif
     msr    CNTVOFF_EL2, xzr       /* Clear virtual timer offset */
 
     /* 2. Configure virtual processor ID */
@@ -1757,9 +1794,17 @@ el2_to_el1_boot:
     mrs    x0, MPIDR_EL1
     msr    VMPIDR_EL2, x0
 
-    /* 3. Disable coprocessor traps to EL2 */
+    /* 3. No coprocessor traps to EL2. versal2 also sets FPEN and EPEN, or
+     * Linux's first FP/SIMD instruction traps to EL2. */
+#if defined(TARGET_versal2)
+    mov    x0, #0x33ff            /* CPTR_EL2: RES1 bits, no traps */
+    orr    x0, x0, #(1 << 20)    /* FPEN: FP/SIMD access from EL0/EL1 */
+    orr    x0, x0, #(1 << 18)    /* EPEN: Enhanced FP from EL0/EL1 */
+    msr    CPTR_EL2, x0
+#else
     mov    x0, #0x33ff            /* CPTR_EL2: RES1 bits, no traps */
     msr    CPTR_EL2, x0
+#endif
     msr    HSTR_EL2, xzr          /* No traps to EL2 on system registers */
     mov    x0, #(3 << 20)         /* CPACR_EL1: Full FP/SIMD access */
     msr    CPACR_EL1, x0
@@ -1790,6 +1835,8 @@ el2_to_el1_boot:
     tst    x0, x1                 /* Test if PAuth supported (Z=1 if not supported) */
     mov    x0, #(1 << 31)         /* RW: EL1 is AArch64 */
     orr    x0, x0, #(1 << 29)     /* HCD: Disable HVC instruction */
+    /* HCR_EL2.IMO and FMO must stay 0. If set, Linux's interrupts and
+     * GIC writes go to EL2 instead of EL1 and its interrupts break. */
     mov    x1, x0                 /* Copy base value */
     orr    x1, x1, #(1 << 41)     /* API: Trap PAuth instructions */
     orr    x1, x1, #(1 << 40)     /* APK: Trap PAuth key access */
