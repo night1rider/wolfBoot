@@ -1,0 +1,119 @@
+/* wolfBoot JTAG boot image for the VEK385 Rev B (TARGET=versal2).
+ * The first six images are the XSA's own boot BIF (Vivado/Vitis 2026.1
+ * VEK385 platform: PLM, CDOs, ASU, AIE), unchanged. Copy them from your
+ * XSA's pdi_files/*.bif if your design differs.
+ * The last image adds the board DTB at 0x1000000 (TF-A reads it there),
+ * TF-A BL31 (EL3) and wolfBoot (EL2) on A78 #0, as Gen 1 does in
+ * tools/scripts/versal_boot.bif. Build TF-A as in docs/Targets.md.
+ * Put system.dtb, bl31.elf and wolfboot.elf in the XSA's pdi_files folder
+ * and run there:
+ *   bootgen -arch versal_2ve_2vm -image versal2_boot.bif -w -o boot.pdi */
+new_bif:
+{
+ id_code = 0x04db0093
+ extended_id_code = 0x01
+ id = 0x2
+ boot_config {smap_width=32}
+ image
+ {
+  name = pmc_subsys
+  id = 0x1c000001
+  partition
+  {
+   id = 0x01
+   type = bootloader
+   file = gen_files/plm.elf
+  }
+  partition
+  {
+   id = 0x09
+   type = pmcdata, load = 0xf2000000
+   file = gen_files/pmc_data.cdo
+  }
+ }
+ image
+ {
+  name = lpd
+  id = 0x4210002
+  partition
+  {
+   id = 0x0C
+   type = cdo
+   file = gen_files/lpd_data.cdo
+  }
+ }
+ image
+ {
+  name = fpd
+  id = 0x420c003
+  partition
+  {
+   id = 0x08
+   type = cdo
+   file = gen_files/fpd_data.cdo
+  }
+ }
+ image
+ {
+  name = pl_cfi
+  id = 0x18700000
+  partition
+  {
+   id = 0x05
+   type = cdo
+   file = versal_comn_platform_wrapper_boot_markers.rnpi
+  }
+ }
+ image
+ {
+  name = asufw
+  id = 0x1C000002
+  partition
+  {
+   id = 0x0F
+   type = cdo
+   file = static_files/asu_data.cdo
+  }
+  partition
+  {
+   id = 0x0B
+   core = asu
+   file = static_files/asufw.elf
+  }
+ }
+ image
+ {
+  name = aie2_subsys
+  id = 0x421c028
+  partition
+  {
+   id = 0x07
+   type = cdo
+   file = gen_files/ai_engine_data.cdo
+  }
+ }
+ image
+ {
+  name = apu_subsystem
+  id = 0x1c000000
+  partition
+  {
+   type = raw
+   load = 0x1000000
+   file = system.dtb
+  }
+  partition
+  {
+   core = a78-0
+   exception_level = el-3
+   trustzone
+   file = bl31.elf
+  }
+  partition
+  {
+   core = a78-0
+   exception_level = el-2
+   file = wolfboot.elf
+  }
+ }
+}
