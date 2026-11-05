@@ -14,8 +14,9 @@
  * Memory Map (VEK385, from the DTB):
  *   0x00000000 - 0x00FFFFFF : PLM (do not use)
  *   0x01000000 - 0x015FFFFF : TF-A (do not use)
- *   0x01800000              : DTS load address
+ *   0x01800000 - 0x097FFFFF : OP-TEE, if used (do not use)
  *   0x0C000000 - 0x1E4E7FFF : RPU reserved regions (do not use)
+ *   0x1F000000              : DTS load address
  *   0x20000000             : application (Linux kernel) load address
  *   0x40000000 - 0x401FFFFF : wolfBoot (2 MB)
  *

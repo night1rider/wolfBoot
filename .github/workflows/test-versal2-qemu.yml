@@ -12,7 +12,10 @@
 #      reads) and the Q5e power-cut test (QEMU killed mid-update,
 #      restarted from the same flash file),
 #   3b. runs the board OSPI tool test (test_ospi_tool.sh),
-#   4. runs the same scenarios with real TF-A BL31 on AMD's QEMU fork.
+#   4. runs the same scenarios with real TF-A BL31 on AMD's QEMU fork,
+#      and, in a second job at the same time, with OP-TEE (BL32)
+#      running before wolfBoot,
+#   5. runs the EL3 tests there (wolfBoot at EL3 -> BL31 -> test-app).
 #
 # QEMU 11.1.3 ships the amd-versal2-virt machine and the Versal OSPI and
 # CSU DMA models these tests use.
@@ -74,6 +77,24 @@ jobs:
           # Run again with a 1 KB SWAP sector. The test reads
           # $WOLFBOOT_SECTOR_SIZE (unit-wolfhal-ext-flash.c test_sector_size()).
           WOLFBOOT_SECTOR_SIZE=0x400 ./unit-wolfhal-ext-flash
+
+      # wolfBoot at EL3: it loads BL31 from the signed FIT and jumps to it.
+      - name: build the VERSAL2_EL3=1 wolfBoot variant
+        run: |
+          set -euxo pipefail
+          cp config/examples/versal2_vek385.config .config
+          make clean TARGET=versal2
+          make TARGET=versal2 VERSAL2_EL3=1 VERSAL2_BL33_BASE=0x30000000
+          # grep -c, not -q: -q can make nm fail with SIGPIPE (pipefail).
+          test "$(aarch64-linux-gnu-nm wolfboot.elf | \
+                  grep -c ' versal2_bl31_handoff')" -eq 1
+
+      - name: run the EL3 handoff unit test
+        run: |
+          set -euxo pipefail
+          cd tools/unit-tests
+          make unit-versal2-el3
+          ./unit-versal2-el3
 
   # Slow: build QEMU 11.1.3 and run the Q2/Q4/Q5 tests in the
   # amd-versal2-virt machine.
@@ -150,11 +171,17 @@ jobs:
   # Real TF-A BL31 -> wolfBoot on AMD's QEMU fork (xlnx_rel_v2026.1.1).
   # DMA reads don't work in this fork, so it uses STIG builds; the
   # `qemu` job above tests DMA.
+  # bl32: none runs BL31 -> wolfBoot. bl32: optee puts OP-TEE between
+  # them. The two run as separate jobs at the same time.
   versal2-tfa:
-    name: "Versal2 TF-A boot (AMD QEMU fork)"
+    name: "Versal2 TF-A boot (AMD QEMU fork, bl32=${{ matrix.bl32 }})"
     runs-on: ubuntu-latest
-    # 120 min: builds the QEMU fork, the VEK385 DTB, TF-A and wolfBoot,
-    # then runs the tests.
+    strategy:
+      fail-fast: false
+      matrix:
+        bl32: [none, optee]
+    # 120 min: builds the QEMU fork, the VEK385 DTB, TF-A (and OP-TEE)
+    # and wolfBoot, then runs the tests.
     timeout-minutes: 120
 
     steps:
@@ -172,7 +199,8 @@ jobs:
             -o Acquire::Retries=3 \
             gcc-aarch64-linux-gnu ninja-build meson pkg-config python3 \
             libslirp-dev libglib2.0-dev libpixman-1-dev libberkeley-db0 \
-            git dtc libgcrypt20-dev
+            git dtc libgcrypt20-dev python3-pyelftools python3-cryptography \
+            u-boot-tools
 
       # Fixed versions: each step below sets its commit. The QEMU fork
       # reports version 8.2.7.
@@ -229,10 +257,75 @@ jobs:
         run: ./tools/scripts/versal2/qemu/build_test_images.sh
 
       - name: run TF-A QEMU suite (--tfa mode, real BL31, no linux=on)
+        if: matrix.bl32 == 'none'
         run: |
           set -euxo pipefail
           DTB_DIR="$PWD/qemu-devicetrees/LATEST/SINGLE_ARCH"
           TIMEOUT=90 ./tools/scripts/versal2/qemu/test_qemu.sh \
             --tfa "$PWD/tf-a/build/versal2/release/bl31/bl31.elf" \
+            --qemu "$PWD/xlnx-qemu/build/qemu-system-aarch64" \
+            --hw-dtb "$DTB_DIR/board-versal2-psxc-vek385-revB.dtb"
+
+      # OP-TEE: BL31 (SPD=opteed) -> OP-TEE (secure EL1) -> wolfBoot (EL2).
+      # PMC and ASU support are off: QEMU has no PLM or ASU firmware.
+      - name: build OP-TEE OS (versal2) and TF-A BL31 with SPD=opteed
+        if: matrix.bl32 == 'optee'
+        env:
+          OPTEE_COMMIT: 84779369bf7953caf4945d09c5f0203d6165ce62
+        run: |
+          set -euxo pipefail
+          git clone https://github.com/OP-TEE/optee_os.git optee_os
+          cd optee_os
+          git checkout "$OPTEE_COMMIT"
+          make -j"$(nproc)" PLATFORM=versal2 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE64=aarch64-linux-gnu- CFG_ARM64_core=y \
+               CFG_CONSOLE_UART=1 CFG_AMD_PMC_SUPPORT=n \
+               CFG_AMD_ASU_SUPPORT=n ta-targets=ta_arm64 O=out
+          test -s out/core/tee.elf
+          cd ../tf-a
+          make PLAT=versal2 RESET_TO_BL31=1 TFA_NO_PM=1 CONSOLE=pl011_1 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               ERRATA_A78_AE_3888018=0 ERRATA_A78_AE_4302973=0 \
+               WORKAROUND_CVE_2024_5660=0 \
+               MEM_BASE=0x1600000 MEM_SIZE=0x200000 \
+               SPD=opteed BUILD_BASE=build-optee bl31
+          test -s build-optee/versal2/release/bl31/bl31.elf
+
+      - name: run TF-A QEMU suite with OP-TEE (--bl32)
+        if: matrix.bl32 == 'optee'
+        run: |
+          set -euxo pipefail
+          DTB_DIR="$PWD/qemu-devicetrees/LATEST/SINGLE_ARCH"
+          TIMEOUT=90 ./tools/scripts/versal2/qemu/test_qemu.sh \
+            --tfa "$PWD/tf-a/build-optee/versal2/release/bl31/bl31.elf" \
+            --bl32 "$PWD/optee_os/out/core/tee.elf" \
+            --qemu "$PWD/xlnx-qemu/build/qemu-system-aarch64" \
+            --hw-dtb "$DTB_DIR/board-versal2-psxc-vek385-revB.dtb"
+
+      # wolfBoot at EL3. This BL31 starts BL33 at 0x30000000, where the
+      # EL3 test's FIT puts the test-app (VERSAL2_BL33_BASE). It runs in
+      # the bl32=none job, which is the shorter one.
+      - name: build TF-A BL31 for the EL3 test (PRELOADED_BL33_BASE)
+        if: matrix.bl32 == 'none'
+        run: |
+          set -euxo pipefail
+          cd tf-a
+          make PLAT=versal2 RESET_TO_BL31=1 TFA_NO_PM=1 CONSOLE=pl011_1 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               ERRATA_A78_AE_3888018=0 ERRATA_A78_AE_4302973=0 \
+               WORKAROUND_CVE_2024_5660=0 \
+               MEM_BASE=0x1600000 MEM_SIZE=0x200000 \
+               PRELOADED_BL33_BASE=0x30000000 BUILD_BASE=build-el3 \
+               bl31
+          test -s build-el3/versal2/release/bl31/bl31.elf
+
+      - name: run the EL3 QEMU tests (wolfBoot EL3 -> BL31 -> test-app)
+        if: matrix.bl32 == 'none'
+        run: |
+          set -euxo pipefail
+          DTB_DIR="$PWD/qemu-devicetrees/LATEST/SINGLE_ARCH"
+          TIMEOUT=60 ./tools/scripts/versal2/qemu/test_el3.sh \
+            --bl31 "$PWD/tf-a/build-el3/versal2/release/bl31/bl31.elf" \
             --qemu "$PWD/xlnx-qemu/build/qemu-system-aarch64" \
             --hw-dtb "$DTB_DIR/board-versal2-psxc-vek385-revB.dtb"

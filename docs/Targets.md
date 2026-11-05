@@ -5081,6 +5081,28 @@ make PLAT=versal2 RESET_TO_BL31=1 CROSS_COMPILE=aarch64-linux-gnu- \
      MEM_BASE=0x1600000 MEM_SIZE=0x200000 bl31
 ```
 
+**OP-TEE (BL32).** wolfBoot also runs after OP-TEE: BL31 (`SPD=opteed`) ->
+OP-TEE (secure EL1) -> wolfBoot (EL2). Upstream OP-TEE has `PLATFORM=versal2`;
+it runs at `0x1800000` with 128 MB (`CFG_TZDRAM_START`/`SIZE`), the address
+TF-A uses for BL32 by default. wolfBoot's DTB copy is at `0x1F000000`
+(`WOLFBOOT_LOAD_DTS_ADDRESS`), outside that range. TF-A and OP-TEE read the
+device tree at `0x1000000`.
+
+```sh
+# OP-TEE, as the workflow builds it for QEMU (no PLM / ASU firmware there):
+make PLATFORM=versal2 CROSS_COMPILE=aarch64-linux-gnu- \
+     CROSS_COMPILE64=aarch64-linux-gnu- CFG_ARM64_core=y CFG_CONSOLE_UART=1 \
+     CFG_AMD_PMC_SUPPORT=n CFG_AMD_ASU_SUPPORT=n ta-targets=ta_arm64
+# TF-A with the OP-TEE dispatcher:
+make PLAT=versal2 RESET_TO_BL31=1 CROSS_COMPILE=aarch64-linux-gnu- \
+     MEM_BASE=0x1600000 MEM_SIZE=0x200000 SPD=opteed bl31
+```
+
+`test_qemu.sh --tfa <bl31.elf> --bl32 <tee.elf> ...` runs the TF-A suite with
+OP-TEE: each boot must show OP-TEE start, and it checks that wolfBoot's DTB,
+image staging and code addresses are clear of OP-TEE's memory. On the board,
+leave the PMC and ASU options on (the PLM and ASU firmware are there).
+
 ### Board (JTAG)
 
 Tested on a VEK385 Rev B with Vitis 2026.1, boot mode JTAG (SW1 = `0000`):
@@ -5179,6 +5201,34 @@ initramfs (`tools/scripts/versal2/qemu/linux/wbmtd`):
   the next boot wolfBoot erases UPDATE and boots v1.
 - Refused update: `wbmtd update /v2.fit --corrupt-sig`. wolfBoot prints
   "Verifying signature...FAILED" and boots v1.
+
+### wolfBoot at EL3 (`VERSAL2_EL3=1`, QEMU only for now)
+
+wolfBoot can also start at EL3 and verify TF-A itself:
+```
+PLM -> wolfBoot (EL3) -> verify FIT, load BL31 -> BL31 (EL3) -> app (EL2)
+```
+
+The signed boot image is a FIT with the app as `kernel-1` and BL31 as an
+image named `atf` (see `tools/scripts/versal2/qemu/el3/el3.its`). wolfBoot
+loads `atf` to its `load` address and jumps to it with the MMU and caches
+off. Upstream versal2 TF-A takes no handoff data: it starts BL33 at its
+build-time `PRELOADED_BL33_BASE`, at EL2. So wolfBoot only hands off when
+`kernel-1`'s entry equals `VERSAL2_BL33_BASE`, and it refuses a FIT with no
+`atf` (an image can't run at EL3 without BL31).
+
+```sh
+make TARGET=versal2 VERSAL2_EL3=1 VERSAL2_BL33_BASE=0x30000000
+# TF-A to match (BL33 address):
+make PLAT=versal2 RESET_TO_BL31=1 CROSS_COMPILE=aarch64-linux-gnu- \
+     MEM_BASE=0x1600000 MEM_SIZE=0x200000 PRELOADED_BL33_BASE=0x30000000 bl31
+```
+
+`tools/scripts/versal2/qemu/test_el3.sh` tests this on AMD's QEMU fork: the
+EL3 boot to the test-app at EL2, a corrupt FIT, a `kernel-1` at the wrong
+address, and a FIT without `atf`. `tools/unit-tests/unit-versal2-el3.c`
+tests the handoff check. Not done yet: passing the DTB to Linux (TF-A
+starts BL33 with no arguments) and a board run.
 
 ### Not yet supported (board)
 
