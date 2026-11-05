@@ -1,0 +1,203 @@
+/dts-v1/;
+/*
+ * ospi-overlay.dts - versal2 QEMU local Linux test additions on top of
+ * QEMU's own amd-versal2-virt DTB (dumpdtb). Applied by mk_dtb.sh with
+ * fdtoverlay (fragment format), then one `fdtput` (also in mk_dtb.sh)
+ * patches the `clocks` property in place because fdtoverlay renumbers
+ * the overlay's phandles and QEMU's base clock nodes carry no labels.
+ *
+ * Two things only:
+ *
+ * 1. /chosen: the Linux command line. The console is the PL011 at
+ *    0xF1930000 (UART1) - the same UART wolfBoot uses (DEBUG_UART_NUM=1)
+ *    and QEMU serial port 2 (the test script captures it). earlycon
+ *    binds to the stdout-path device. maxcpus=1: the QEMU machine boots
+ *    only CPU0 (secondaries are power-off, no PLM/TF-A PSCI). No root=
+ *    needed: the FIT ramdisk is the root filesystem (wolfBoot
+ *    FIT_RAMDISK=1, /chosen/linux,initrd-{start,end}).
+ *
+ * 2. The OSPI flash controller node. QEMU's dump has none (the model
+ *    has no FDT support), so it is added here with the shape AMD's
+ *    VEK385 DTB uses for the same controller (/axi/spi@f1010000), with
+ *
+ *      compatible = "cdns,qspi-nor" "qemu,xlnx-versal-ospi-nor";
+ *
+ *    i.e. the board's first string "amd,versal2-ospi" is DROPPED for
+ *    the QEMU build (it stays in the board DTB). The stock driver
+ *    (drivers/spi/spi-cadence-quadspi.c) selects its platform quirks by
+ *    compatible (cqspi_dt_ids[]); "amd,versal2-ospi" -> versal2_ospi
+ *    platdata = CQSPI_SUPPORTS_OCTAL + CQSPI_SUPPORT_EXTERNAL_DMA, which
+ *    in the stock driver means:
+ *      (a) aligned bulk reads go through the CSU DMA only after a
+ *          zynqmp_pm_ospi_mux_select() PM ioctl (IOCTL_OSPI_MUX_SELECT
+ *          = 21) over the SMC conduit; in QEMU the zynqmp firmware
+ *          driver never completes its PM SMC handshake (no "SMC 0x..."
+ *          trace lines in the console, no "Platform Management API
+ *          v1.0" probe message, and the first (SFDP) DMA read fails
+ *          with "spi-nor spi0.0: CS0: operation failed with -19" =
+ *          -ENODEV from zynqmp_pm_ioctl with no firmware ops);
+ *      (b) the OCTAL hwcaps make spi-nor switch the flash to 8D-8D-8D
+ *          (DTR/DDR, DQS-based). The QEMU OSPI model has no DQS/DDR PHY
+ *          fidelity, so the driver's periodic delay-line tuning
+ *          (CQSPI_TUNING_PERIODICITY_MS = 300000 ms; cqspi_setdlldelay:
+ *          tap-scan + JEDEC-ID match window >= 3) fails with -EINVAL
+ *          ("CS0: periodic tuning failed (-22)") about 5 min into the
+ *          wbmtd update write and the write aborts.
+ *    With the generic "cdns,qspi-nor" string the driver binds the
+ *    cdns_qspi platdata (quirks = CQSPI_DISABLE_DAC_MODE only):
+ *    no EXTERNAL_DMA (no firmware/mux-select dependency; reads use the
+ *    APB indirect-read engine + DAC data window - the same path
+ *    wolfBoot uses, proven by the FIT load), no OCTAL hwcaps (the flash
+ *    stays SDR; the periodic tuning is then an SDR tap-scan, whose
+ *    JEDEC-ID reads the model answers correctly), STIG enabled,
+ *    wr-completion on. Everything else (register layout, indirect write
+ *    + completion IRQ, fixed partitions) is identical, and on real
+ *    VEK385 hardware the board DTB keeps "amd,versal2-ospi" (the stock
+ *    versal2_ospi path is the board-correct one; the string change is
+ *    QEMU-only, which is why the DTB overlay - not the driver - carries
+ *    it). The trailing "qemu,xlnx-versal-ospi-nor" string binds nothing
+ *    (no driver claims it) but is kept in the compatible list so the
+ *    DTB layout stays stable.
+ *
+ *    "cdns,qspi-nor" is the Linux compatible for the Cadence QSPI/OSPI
+ *    controller; the flash child "jedec,spi-nor" is picked up by the
+ *    standard SPI-NOR MTD driver, so NO custom kernel or driver module
+ *    is needed: the stock AMD EDF kernel probes QEMU's OSPI model
+ *    (hw/ssi/xlnx-versal-ospi.c: APB registers at 0xF1010000, DAC
+ *    window at 0xC0000000 size 0x20000000, GIC SPI 216 on this machine,
+ *    CSU DMA at 0xF1011000/0xF1011800 - all modelled). Note the IRQ
+ *    number is machine-dependent: amd-versal2-virt uses VERSAL2_MAP in
+ *    hw/arm/xlnx-versal.c, whose .ospi.irq is 216 (the .ospi.irq = 124
+ *    entry belongs to the Versal Gen1 VERSAL_MAP; the VEK385 board DTB
+ *    also says 124, but QEMU's machine wires 216 - see the
+ *    interrupts property below for the details).
+ *
+ *    The stock driver's cqspi_of_get_pdata() (EDF 6.18.10-xilinx)
+ *    REQUIRES cdns,fifo-depth / cdns,fifo-width / cdns,trigger-address
+ *    on the controller and cdns,read-delay / cdns,tshsl-ns /
+ *    cdns,tsd2d-ns / cdns,tchsh-ns / cdns,tslch-ns on the flash node
+ *    (without cdns,read-delay the probe fails with "couldn't determine
+ *    read-delay" + "failed to setup flash parameters -6"). The system
+ *    dtc 1.7.2 cannot parse comma-containing property names, so all of
+ *    them are written by mk_dtb.sh into the combined tree
+ *    (fdt_setprop.py --cells) with the exact VEK385 values
+ *    (fifo-depth 256 = the model's detected depth, no
+ *    "FIFO depth (256) different from config" warning; trigger-address
+ *    0xc0000000; read-delay 0, tshsl-ns 0, tsd2d-ns 0, tchsh-ns 1,
+ *    tslch-ns 1).
+ *
+ *    The /firmware node below ("xlnx,versal2-firmware", method "smc")
+ *    is kept for the zynqmp firmware driver. With the cdns_qspi
+ *    platdata (see above) the OSPI driver no longer depends on it; the
+ *    trampoline still implements the PM SMC answers (see trampoline.S,
+ *    AMD System Controller PM API section).
+ *
+ *    The fixed-partitions children must match
+ *    config/examples/versal2_vek385_linux.config exactly (Bank A, after
+ *    the 8 MB BOOT.BIN reservation):
+ *      BOOT   0x1DC0000  44 MB   (/dev/mtd* "boot")
+ *      UPDATE 0x49C0000  44 MB   (/dev/mtd* "update")
+ *      SWAP   0xFA40000  64 KB   (/dev/mtd* "swap")
+ *
+ *    The flash@0 reg is the chip-select (0) per the controller's
+ *    #address-cells=1 / #size-cells=0. The flash timing properties
+ *    match the VEK385 DTB at its 20 MHz spi-max-frequency (the QEMU
+ *    model has no PHY timing, so the driver's delay-line tuning writes
+ *    are register-only there).
+ */
+/ {
+	fragment@0 {
+		target-path = "/chosen";
+		__overlay__ {
+			/* Console is ttyAMA1 = UART1 (0xF1930000), the UART
+			 * wolfBoot uses and the test captures. maxcpus=1:
+			 * QEMU starts only CPU0. */
+			/* The bootargs line is over 80 columns because a DTS
+			 * string can't be split without changing its value. */
+			stdout-path = "/uart@f1930000";
+			bootargs = "earlycon=pl011,mmio32,0xf1930000 console=ttyAMA1,115200 maxcpus=1 rdinit=/init initcall_debug";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			/* OSPI flash controller. reg 0 = registers at
+			 * 0xF1010000; reg 1 = 512 MB flash window at
+			 * 0xC0000000. Same order as the VEK385 DTB. */
+			qspi@f1010000 {
+				/* dtc 1.7.2 can't parse two strings here,
+				 * so mk_dtb.sh adds the second string
+				 * later (fdt_setprop.py). */
+				compatible = "cdns,qspi-nor";
+				reg = <0x0 0xf1010000 0x0 0x10000
+				       0x0 0xc0000000 0x0 0x20000000>;
+				/* QEMU wires the OSPI IRQ to SPI 216
+				 * (hw/arm/xlnx-versal.c VERSAL2_MAP). The
+				 * board value 124 makes every write time out. */
+				interrupts = <0x0 216 0x4>;
+				clock-names = "ref";
+				/* The cdns,fifo-* and cdns,trigger-address
+				 * names have commas dtc 1.7.2 can't parse,
+				 * so mk_dtb.sh adds them later. */
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* NOR flash on chip-select 0. mk_dtb.sh adds
+				 * its cdns,* timing values later (same dtc
+				 * comma problem). */
+				flash@0 {
+					compatible = "jedec,spi-nor";
+					reg = <0>;
+					/* 20 MHz, the VEK385 value. */
+					spi-max-frequency = <20000000>;
+					/* No bus-width = 8 here (the board has
+					 * it): the flash stays in 1-bit mode,
+					 * since QEMU can't do 8-bit DDR. */
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					partitions {
+						compatible = "fixed-partitions";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						/* wolfBoot BOOT partition
+						 * (must match the config) */
+						partition@1dc0000 {
+							reg = <0x1dc0000 0x2c00000>;
+							label = "boot";
+						};
+
+						/* wolfBoot UPDATE partition */
+						partition@49c0000 {
+							reg = <0x49c0000 0x2c00000>;
+							label = "update";
+						};
+
+						/* wolfBoot SWAP sector
+						 * (one 128 KB sector) */
+						partition@fa40000 {
+							reg = <0xfa40000 0x20000>;
+							label = "swap";
+						};
+					};
+				};
+			};
+		};
+	};
+
+	/* Firmware node for the zynqmp firmware driver. "smc" because the
+	 * trampoline answers the PM calls at EL3 (see trampoline.S). The
+	 * board's power-domains cell is left out; QEMU has none. */
+	fragment@2 {
+		target-path = "/";
+		__overlay__ {
+			firmware {
+				compatible = "xlnx,versal2-firmware";
+				method = "smc";
+				status = "okay";
+			};
+		};
+	};
+};

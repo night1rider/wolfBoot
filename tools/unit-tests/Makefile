@@ -164,6 +164,7 @@ TESTS+=unit-imx95-disk
 TESTS+=unit-versal-ext-write
 TESTS+=unit-versal-wdt
 TESTS+=unit-versal-uart-rx
+TESTS+=unit-wolfhal-ext-flash
 TESTS+=unit-raspi3-uart-rx
 TESTS+=unit-mpfs-wdt
 TESTS+=unit-t10xx-qe-firmware
@@ -1884,6 +1885,20 @@ versal_uart_rx_extract.h: ../../hal/versal.c
 
 unit-versal-uart-rx: unit-versal-uart-rx.c versal_uart_rx_extract.h versal_host.h
 	gcc -o $@ unit-versal-uart-rx.c -DARCH_AARCH64 -DARCH_64BIT $(CFLAGS) $(LDFLAGS)
+
+# unit-wolfhal-ext-flash copies the ext_flash code of hal/wolfhal.c (the
+# partition guard and the ext_flash_* glue) and runs it on a mock wolfHAL
+# flash device. The wolfHAL drivers below it are tested in wolfHAL
+# (lib/wolfHAL/tests/core).
+UNIT_WOLFHAL=../../lib/wolfHAL
+wolfhal_ext_flash_extract.h: ../../hal/wolfhal.c
+	sed -n '/^\/\*WOLFHAL_EXT_FLASH_BEGIN/,/^\/\*WOLFHAL_EXT_FLASH_END/p' \
+	  $< > $@
+	test -s $@
+
+unit-wolfhal-ext-flash: unit-wolfhal-ext-flash.c wolfhal_ext_flash_extract.h
+	gcc -o $@ unit-wolfhal-ext-flash.c $(UNIT_WOLFHAL)/src/flash/flash.c \
+	  -I$(UNIT_WOLFHAL) $(CFLAGS) $(LDFLAGS)
 
 # unit-raspi3-uart-rx runs the real uart_rx() from hal/raspi3.c, the
 # other PL011 console in the tree, against an emulated register block.
