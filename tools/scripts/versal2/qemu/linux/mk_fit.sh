@@ -25,7 +25,7 @@
 #            (EDF kernel,        WOLFBOOT_LOAD_KERNEL_ADDRESS=0 -> follow
 #             33 MB raw)         the FIT load/entry)
 #   fdt-1     kernel.dtb        no load property: wolfBoot copies the FIT
-#            (from mk_dtb.sh)    fdt to WOLFBOOT_LOAD_DTS_ADDRESS=0x1800000
+#            (from mk_dtb.sh)    fdt to WOLFBOOT_LOAD_DTS_ADDRESS=0x1F000000
 #   ramdisk-1 initramfs.cpio.gz  load 0x30000000 (768 MB, low RAM;
 #            (from               WOLFBOOT_LOAD_RAMDISK_ADDRESS=0x30000000
 #             mk_initramfs.sh)   overrides it)

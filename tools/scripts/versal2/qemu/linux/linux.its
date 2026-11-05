@@ -19,7 +19,7 @@
  *                                this load/entry)
  *   fdt-1     kernel.dtb        no load property on purpose: wolfBoot
  *             (QEMU base + OSPI   relocates the FIT fdt to
- *             overlay, mk_dtb.sh) WOLFBOOT_LOAD_DTS_ADDRESS=0x1800000
+ *             overlay, mk_dtb.sh) WOLFBOOT_LOAD_DTS_ADDRESS=0x1F000000
  *   ramdisk-1 initramfs.cpio.gz  gzip, load 0x30000000 (768 MB;
  *                                WOLFBOOT_LOAD_RAMDISK_ADDRESS=0x30000000
  *                                also overrides it)

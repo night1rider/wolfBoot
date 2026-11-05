@@ -45,6 +45,14 @@
 #if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
 #include "../hal/zynqmp_atf.h"
 #endif
+#if defined(WOLFBOOT_VERSAL2_EL3) && defined(MMU)
+#include "../hal/versal2.h"
+#endif
+/* wolfBoot at EL3 loads BL31 from the FIT ("atf") and hands off to it. */
+#if (defined(WOLFBOOT_ZYNQMP_FSBL) || defined(WOLFBOOT_VERSAL2_EL3)) && \
+    defined(MMU)
+#define WOLFBOOT_EL3_BL31_HANDOFF
+#endif
 
 extern void hal_flash_dualbank_swap(void);
 /* DTS helpers declared in include/image.h under (MMU || WOLFBOOT_FDT). */
@@ -317,7 +325,7 @@ void RAMFUNCTION wolfBoot_start(void)
     uint8_t  dts_hdr[64] __attribute__((aligned(4)));
 #endif
 #endif
-#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+#ifdef WOLFBOOT_EL3_BL31_HANDOFF
     /* When wolfBoot is the FSBL, the boot FIT carries an "atf" (BL31)
      * sub-image. If present, hand off to BL31 instead of jumping to the
      * kernel directly. */
@@ -637,7 +645,7 @@ backup_on_failure:
         fdt_ctx* fit = &fit_ctx;
         const char *kernel = NULL, *flat_dt = NULL, *ramdisk = NULL;
         const char *fpga = NULL;
-#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+#ifdef WOLFBOOT_EL3_BL31_HANDOFF
         void *atf_load;
 #endif
 
@@ -668,7 +676,7 @@ backup_on_failure:
             stage_entry_override = 1;
 #endif
         }
-#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+#ifdef WOLFBOOT_EL3_BL31_HANDOFF
         /* Load BL31 (ARM Trusted Firmware) to its DDR exec address. Its entry
          * point is the FIT `load`/`entry` address returned here. Optional: if
          * absent, fall through to the normal direct boot. */
@@ -880,16 +888,25 @@ backup_on_failure:
 #ifndef WOLFBOOT_SKIP_BOOT_VERIFY
     PART_SANITY_CHECK(&os_image);
 #endif
-#if defined(WOLFBOOT_ZYNQMP_FSBL) && defined(MMU)
+#ifdef WOLFBOOT_EL3_BL31_HANDOFF
     if (bl31_entry != 0) {
         /* Hand off to BL31 (resident EL3 monitor). BL31 starts the kernel
-         * (BL33) at EL2; the DTB is forwarded via PMU_GLOBAL scratch (see
-         * hal/zynqmp_atf.c). Does not return. */
+         * (BL33) at EL2. Does not return. */
         wolfBoot_printf("Handing off to BL31 at %p (kernel %p)\n",
             (void*)bl31_entry, (void*)load_address);
+#ifdef WOLFBOOT_ZYNQMP_FSBL
+        /* The DTB is forwarded via PMU_GLOBAL scratch (hal/zynqmp_atf.c). */
         zynqmp_atf_handoff(bl31_entry, (uintptr_t)load_address,
             (uintptr_t)dts_addr, ZYNQMP_ATF_EL2);
+#else
+        versal2_bl31_handoff(bl31_entry, (uintptr_t)load_address);
+#endif
     }
+#endif
+#ifdef WOLFBOOT_VERSAL2_EL3
+    /* At EL3 the image needs BL31 to run (PSCI, EL2 entry). */
+    wolfBoot_printf("EL3: no BL31 (atf) in the boot image\n");
+    wolfBoot_panic();
 #endif
 #if defined(MMU) || defined(WOLFBOOT_FDT)
     /* Match the do_boot() signature condition in src/boot_riscv.c. */

@@ -267,6 +267,14 @@ ifeq ($(ARCH),AARCH64)
     # static image at a fixed address (WOLFBOOT_ORIGIN).
     CFLAGS+=-fno-pic -fno-pie
     LDFLAGS+=-static -no-pie -Wl,--build-id=none
+    # VERSAL2_EL3=1: wolfBoot starts at EL3, loads BL31 from the signed FIT
+    # ("atf") and jumps to it. VERSAL2_BL33_BASE is TF-A's BL33 address.
+    ifeq ($(VERSAL2_EL3),1)
+      CFLAGS+=-DWOLFBOOT_VERSAL2_EL3
+      ifneq ($(VERSAL2_BL33_BASE),)
+        CFLAGS+=-DVERSAL2_BL33_BASE=$(VERSAL2_BL33_BASE)
+      endif
+    endif
   endif
 
   ifeq ($(TARGET),tegra234)

@@ -1,0 +1,56 @@
+/dts-v1/;
+/*
+ * el3.its - FIT source for the versal2 EL3 QEMU test (test_el3.sh).
+ *
+ * With VERSAL2_EL3=1 wolfBoot starts at EL3, checks this signed FIT, loads
+ * BL31 from the "atf" image and jumps to it. BL31 then starts kernel-1 at
+ * EL2. Upstream versal2 TF-A takes no handoff data, so kernel-1's load and
+ * entry must equal TF-A's PRELOADED_BL33_BASE and wolfBoot's
+ * VERSAL2_BL33_BASE (0x30000000 here).
+ *
+ * test_el3.sh fills in @BUILDDIR@ and @BL33@ before running mkimage.
+ *
+ *   kernel-1  test-app (image.bin, linked at 0x30000000), load/entry @BL33@
+ *   atf       TF-A BL31 (bl31.bin), load/entry 0x1600000 (TF-A MEM_BASE)
+ */
+/ {
+	description = "AMD Versal Gen 2 (VEK385) - wolfBoot EL3 test";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "wolfBoot test-app (BL33)";
+			data = /incbin/("@BUILDDIR@/app.bin");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <@BL33@>;
+			entry = <@BL33@>;
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+		atf {
+			description = "TF-A BL31";
+			data = /incbin/("@BUILDDIR@/bl31.bin");
+			type = "firmware";
+			arch = "arm64";
+			compression = "none";
+			load = <0x1600000>;
+			entry = <0x1600000>;
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+	};
+
+	configurations {
+		default = "conf-el3";
+		conf-el3 {
+			description = "wolfBoot EL3 -> BL31 -> test-app";
+			kernel = "kernel-1";
+			loadables = "atf";
+		};
+	};
+};
