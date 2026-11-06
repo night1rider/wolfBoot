@@ -233,6 +233,28 @@ NVM_FLASH_WRITEONCE=1
 Adjust partition addresses and sector sizes for your board's flash layout. Optionally
 add `DEBUG_UART=1` to enable UART debug output.
 
+## External Flash and Other Board Options
+
+`hal/wolfhal.c` reads these optional handles and flags from the board:
+
+- `BOARD_EXT_FLASH_DEV` (with `EXT_FLASH=1`): a `whal_Flash` device for the
+  external flash. `hal/wolfhal.c` implements `ext_flash_read`,
+  `ext_flash_write`, `ext_flash_erase`, `ext_flash_lock` and
+  `ext_flash_unlock` on it. Program and erase are refused unless they fit
+  fully inside the BOOT, UPDATE or SWAP partition, so other data on the
+  external flash (for example an earlier boot stage's image) is never
+  changed. `tools/unit-tests/unit-wolfhal-ext-flash.c` tests this code.
+- `BOARD_FLASH_DEV`: leave it undefined on a board with no internal flash.
+  `hal_flash_write` and `hal_flash_erase` then fail, and all partitions must
+  be in the external flash.
+- `WOLFHAL_UART_CRLF` (in `board.mk`): `uart_write` sends `'\n'` as
+  `"\r\n"`.
+
+The AMD VEK385 (`hal/boards/vek385`, `TARGET=versal2`, Cortex-A78AE) uses
+all three: its OSPI flash is a wolfHAL NOR flash on a SPI memory controller,
+and the target keeps its own test application (`app_versal2.c`) in place of
+`app_wolfhal.c`.
+
 ## RAM_CODE
 
 When `RAM_CODE=1` is set, wolfBoot's core flash update functions are placed in RAM
