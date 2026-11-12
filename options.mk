@@ -1202,6 +1202,12 @@ ifeq ($(BOOT_EL2),1)
   CFLAGS+=-D"BOOT_EL2"
 endif
 
+# versal2: start Linux at EL2 with the MMU and caches off (ARM64 boot
+# rules). Without it the MMU stays on and Linux panics at boot.
+ifeq ($(WOLFBOOT_VERSAL2_EL2_MMU_OFF),1)
+  CFLAGS+=-D"WOLFBOOT_VERSAL2_EL2_MMU_OFF"
+endif
+
 ifeq ($(BOOT_BENCHMARK),1)
   CFLAGS+=-D"BOOT_BENCHMARK"
 endif

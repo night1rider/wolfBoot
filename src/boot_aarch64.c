@@ -32,6 +32,8 @@
  * compile in for the active target. */
 #if defined(TARGET_versal)
 #include "hal/versal.h"
+#elif defined(TARGET_versal2)
+#include "hal/versal2.h"
 #elif defined(TARGET_agilex5)
 #include "hal/agilex5.h"
 #elif defined(TARGET_zynq)
@@ -221,7 +223,8 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
      * "Non-EFI boot detected with MMU and caches enabled" otherwise),
      * and correct for any payload that sets up its own translation
      * (hypervisor, RTOS, later bootloader stage). */
-#if defined(MMU) && defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1
+#if defined(MMU) && defined(EL2_HYPERVISOR) && EL2_HYPERVISOR == 1 && \
+    !defined(TARGET_versal2)
     if (current_el() == 2) {
         wolfBoot_printf("do_boot: flushing caches, disabling MMU\n");
         /* Fused flush+disable+jump: a stack reload between a separate
@@ -259,6 +262,36 @@ void RAMFUNCTION do_boot(const uint32_t *app_offset)
     asm volatile("ic iallu");
     asm volatile("dsb ish");
     asm volatile("isb");
+#endif
+
+#if defined(TARGET_versal2) && defined(MMU)
+#ifdef WOLFBOOT_VERSAL2_EL2_MMU_OFF
+    /* Linux at EL2 needs the MMU off; its "hvc #0" needs SCR_EL3.HCE (BL31
+     * or the QEMU trampoline sets it). */
+    el2_flush_disable_mmu_and_boot((uintptr_t)app_offset,
+                                   (uintptr_t)dts_offset);
+    return;
+#else
+    /* The test-app keeps the MMU on: QEMU faults on uncached writes to high
+     * DDR. Flush the image and DTB from the caches before the jump. */
+    #ifndef WOLFBOOT_MMU_FLUSH_APP_SIZE
+    #define WOLFBOOT_MMU_FLUSH_APP_SIZE WOLFBOOT_PARTITION_SIZE
+    #endif
+    #ifndef WOLFBOOT_MMU_FLUSH_DTS_SIZE
+    #define WOLFBOOT_MMU_FLUSH_DTS_SIZE 0x100000UL
+    #endif
+    flush_dcache_range((unsigned long)(uintptr_t)app_offset,
+                       (unsigned long)(uintptr_t)app_offset
+                           + (unsigned long)WOLFBOOT_MMU_FLUSH_APP_SIZE);
+    if ((uintptr_t)dts_offset != 0) {
+        flush_dcache_range((unsigned long)(uintptr_t)dts_offset,
+                           (unsigned long)(uintptr_t)dts_offset
+                               + (unsigned long)WOLFBOOT_MMU_FLUSH_DTS_SIZE);
+    }
+    asm volatile("ic iallu");
+    asm volatile("dsb ish");
+    asm volatile("isb");
+#endif
 #endif
 
     /* Set application address via x4 */

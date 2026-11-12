@@ -487,6 +487,20 @@ system-default.dtb
 test_output/
 sdcard.img
 
+# Versal Gen 2 QEMU test build outputs (tools/scripts/versal2/qemu)
+tools/scripts/versal2/qemu/linux/edf/
+tools/scripts/versal2/qemu/linux/initramfs.cpio.gz
+tools/scripts/versal2/qemu/linux/fitbuild.py
+tools/scripts/versal2/qemu/linux/wbmtd/wbmtd.aarch64
+tools/scripts/versal2/qemu/linux/wbmtd/wbmtd.host
+tools/scripts/versal2/qemu/linux/wbmtd/wbmtd_test_host
+tools/scripts/versal2/qemu/stage/
+tools/scripts/versal2/qemu/trampoline/tramp.elf
+tools/scripts/versal2/qemu/trampoline/tramp_new.elf
+tools/scripts/versal2/qemu/q4/*.o
+tools/scripts/versal2/qemu/q4/*.elf
+tools/scripts/versal2/qemu/q4/wolfhal_ext_flash_extract.h
+
 # wolfHSM STM32H5 TZ demo build output
 port/stmicro/stm32h5-tz-wolfhsm/out/
 
@@ -532,6 +546,7 @@ tools/unit-tests/unit-t2080-fman-loader
 tools/unit-tests/unit-ti-hercules-write
 tools/unit-tests/unit-versal-ext-write
 tools/unit-tests/unit-versal-qspi-dma
+tools/unit-tests/unit-wolfhal-ext-flash
 tools/unit-tests/unit-xspi-tfd-index
 tools/unit-tests/unit-zynq-erase-loop
 tools/unit-tests/unit-zynq-ext-write
@@ -558,6 +573,7 @@ tools/unit-tests/versal_ext_write_extract.h
 tools/unit-tests/versal_host.c
 tools/unit-tests/versal_host.h
 tools/unit-tests/versal_qspidev_extract.h
+tools/unit-tests/wolfhal_ext_flash_extract.h
 tools/unit-tests/zynq_erase_extract.h
 tools/unit-tests/zynq_write_extract.h
 tools/unit-tests/unit-sign-header-failure
@@ -686,3 +702,5 @@ tools/unit-tests/stm32wb_write_extract.h
 tools/unit-tests/t10xx_flash_status_extract.h
 tools/unit-tests/ti_hercules_erase_extract.h
 tools/unit-tests/versal_host_write.c
+# Build-identity file written next to wolfboot.elf by the versal2 QEMU tests
+wolfboot.elf.meta
