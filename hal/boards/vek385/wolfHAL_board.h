@@ -33,8 +33,9 @@
 #include <wolfHAL/platform/amd/versal2.h>
 #include <wolfHAL/uart/pl011_uart.h>
 #include <wolfHAL/spimem/cadence_ospi_spimem.h>
-#include <wolfHAL/spimem/versal2_ospi_dma.h>
+#include <wolfHAL/dma/versal2_ospi_dma.h>
 #include <wolfHAL/flash/spimem_nor_flash.h>
+#include <wolfHAL/flash/spimem_nor_mt35x.h>
 
 /* Console: UART1 (UG1712 "UART Interfaces"); DEBUG_UART_NUM=0 picks
  * UART0. */

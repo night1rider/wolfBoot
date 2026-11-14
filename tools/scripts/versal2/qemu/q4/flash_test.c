@@ -31,7 +31,8 @@
 #include <wolfHAL/wolfHAL.h>
 #include <wolfHAL/platform/amd/versal2.h>
 #include <wolfHAL/flash/spimem_nor_flash.h>
-#include <wolfHAL/spimem/versal2_ospi_dma.h>
+#include <wolfHAL/flash/spimem_nor_mt35x.h>
+#include <wolfHAL/dma/versal2_ospi_dma.h>
 
 /* Partition layout. Must match config/examples/versal2_vek385.config. */
 #define WOLFBOOT_PARTITION_BOOT_ADDRESS   0x1DC0000UL
@@ -133,54 +134,83 @@ static void q4_dcache_inval(void *buf, size_t len)
 }
 
 static whal_Timeout q4_dma_timeout = { 10000000U, 0, q4_tick_us };
-static whal_Versal2_OspiDma_Ctx q4_dma_ctx = {
-    WHAL_VERSAL2_OSPI_BASE,
-    WHAL_VERSAL2_OSPI_DMA_SRC_RD_ADDR,
-    WHAL_VERSAL2_OSPI_DMA_DST_CTRL,
-    q4_dcache_clean_inval,
-    q4_dcache_inval,
-    &q4_dma_timeout
+static whal_DmaMemXfer q4_dma_xfer;
+static whal_Versal2_OspiDma_Cfg q4_dma_cfg = {
+    .srcRdAddr = WHAL_VERSAL2_OSPI_DMA_SRC_RD_ADDR,
+    .dstCtrl = WHAL_VERSAL2_OSPI_DMA_DST_CTRL,
+    .CacheCleanInval = q4_dcache_clean_inval,
+    .CacheInval = q4_dcache_inval,
+    .timeout = &q4_dma_timeout,
+    .xfer = &q4_dma_xfer,
 };
 
-/* Wrap the hook to count the DMA transfers. */
+/* The OSPI DMA driver, counting the transfers it starts. */
 static int q4_dma_arms;
-static whal_Error q4_dma_arm(void *ctx, void *buf, size_t len)
+static whal_Error q4_dma_start(whal_Dma *dmaDev, size_t ch)
 {
     q4_dma_arms++;
-    return whal_Versal2_OspiDma_Arm(ctx, buf, len);
+    return whal_Versal2_OspiDma_Start(dmaDev, ch);
 }
 
-static const whal_CadenceOspi_SpiMem_Dma q4_dma = {
-    q4_dma_arm, whal_Versal2_OspiDma_Wait, &q4_dma_ctx, CACHE_LINE_SIZE
+static const whal_DmaDriver q4_dma_driver = {
+    .Init = whal_Versal2_OspiDma_Init,
+    .Deinit = whal_Versal2_OspiDma_Deinit,
+    .Configure = whal_Versal2_OspiDma_Configure,
+    .Start = q4_dma_start,
+    .Stop = whal_Versal2_OspiDma_Stop,
+    .Wait = whal_Versal2_OspiDma_Wait,
 };
-#define Q4_DMA_HOOK (&q4_dma)
+static whal_Dma q4_dma = {
+    .base = WHAL_VERSAL2_OSPI_BASE,
+    .driver = &q4_dma_driver,
+    .cfg = &q4_dma_cfg,
+};
+#define Q4_DMA (&q4_dma)
+#define Q4_DMA_ALIGN CACHE_LINE_SIZE
 #else
-#define Q4_DMA_HOOK NULL
+#define Q4_DMA NULL
+#define Q4_DMA_ALIGN 0
 #endif
 
 /* The flash devices, set up as in hal/boards/vek385. QEMU has no PLM, so the
  * controller starts from its reset values. */
 static whal_CadenceOspi_SpiMem_Cfg q4_ospi_cfg = {
-    WHAL_VERSAL2_OSPI_DEV_SIZE_VEK385,
-    VERSAL2_OSPI_BAUD_DIV_32,
-    VERSAL2_OSPI_CS_LINES,
-    VERSAL2_OSPI_RD_CAPTURE,
-    WHAL_VERSAL2_OSPI_IND_TRIG_BASE,
-    WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
-    WHAL_VERSAL2_OSPI_SRAM_PARTITION,
-    WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
-    Q4_DMA_HOOK,
-    &q4_ospi_timeout
+    .devSize = WHAL_VERSAL2_OSPI_DEV_SIZE_VEK385,
+    .baudDiv = VERSAL2_OSPI_BAUD_DIV_32,
+    .csLines = VERSAL2_OSPI_CS_LINES,
+    .rdCapture = VERSAL2_OSPI_RD_CAPTURE,
+    .indTrigBase = WHAL_VERSAL2_OSPI_IND_TRIG_BASE,
+    .indTrigRange = WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
+    .sramPartition = WHAL_VERSAL2_OSPI_SRAM_PARTITION,
+    .dmaPeriphCfg = WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
+    .dma = Q4_DMA,
+    .dmaCh = WHAL_VERSAL2_OSPI_DMA_CH,
+    .dmaAlign = Q4_DMA_ALIGN,
+    .timeout = &q4_ospi_timeout,
 };
 static whal_SpiMem versal2_ospi = {
     WHAL_VERSAL2_OSPI_BASE, WHAL_VERSAL2_OSPI_DRIVER, &q4_ospi_cfg
 };
 static whal_SpiMemNor_Flash_Cfg q4_flash_cfg = {
-    &versal2_ospi, 0x10000000, 256, 0x20000, 4,
-    OSPI_OP_READ4, 0, OSPI_OP_PAGE_PROGRAM4, OSPI_OP_ERASE4_128K,
-    WHAL_SPIMEM_NOR_FLAG_FSR | WHAL_SPIMEM_NOR_FLAG_RESET |
-        WHAL_SPIMEM_NOR_FLAG_MICRON_VCFG_1BIT,
-    VERSAL2_FLASH_JEDEC_ID, &q4_flash_timeout
+    .spiMemDev = &versal2_ospi,
+    .capacity = 0x10000000,
+    .pageSz = 256,
+    .eraseSz = 0x20000,
+    .addrBytes = 4,
+    .readOp = OSPI_OP_READ4,
+    .readDummy = 0,
+    .progOp = OSPI_OP_PAGE_PROGRAM4,
+    .eraseOp = OSPI_OP_ERASE4_128K,
+    .flags = WHAL_SPIMEM_NOR_FLAG_RESET,
+    .id = VERSAL2_FLASH_JEDEC_ID,
+    .errOp = WHAL_SPIMEM_NOR_MT35X_ERR_OP,
+    .errMask = WHAL_SPIMEM_NOR_MT35X_ERR_MASK,
+    .errClearOp = WHAL_SPIMEM_NOR_MT35X_ERR_CLEAR_OP,
+    .rstRegOp = WHAL_SPIMEM_NOR_MT35X_RST_REG_OP,
+    .rstRegAddrBytes = WHAL_SPIMEM_NOR_MT35X_RST_REG_ADDR_BYTES,
+    .rstRegAddr = WHAL_SPIMEM_NOR_MT35X_RST_REG_ADDR,
+    .rstRegVal = WHAL_SPIMEM_NOR_MT35X_RST_REG_VAL,
+    .timeout = &q4_flash_timeout,
 };
 static whal_Flash versal2_flash = {
     0, &whal_SpiMemNor_Flash_Driver, &q4_flash_cfg
@@ -233,6 +263,12 @@ int main(void)
     (void)whal_Uart_Init(&q4_uart);
     putstr("Q4-TEST-START\n");
 
+#ifdef WOLFBOOT_OSPI_DMA
+    if (whal_Dma_Init(&q4_dma) != WHAL_SUCCESS) {
+        putstr("Q4 INIT: FAIL (DMA)\n");
+        rc = 1;
+    }
+#endif
     if (whal_SpiMem_Init(&versal2_ospi) != WHAL_SUCCESS) {
         putstr("Q4 INIT: FAIL (controller)\n");
         rc = 1;

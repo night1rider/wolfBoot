@@ -5013,14 +5013,14 @@ and `hal_init`, and the generic `hal/wolfhal.c` provides `ext_flash_*` and
   command with its STIG engine). Init sets the controller to 1-bit, clock
   /32, chip select 0 and the board's read capture; every command is 1-bit
   single rate;
-- **CSU DMA reads**: `spimem/versal2_ospi_dma`, the default read path
+- **CSU DMA reads**: `dma/versal2_ospi_dma`, the default read path
   (`WOLFBOOT_OSPI_DMA=1`). The buffer's cache lines are cleaned/invalidated
   around the transfer; unaligned heads and tails are read with STIG.
   `WOLFBOOT_OSPI_DMA=0` uses STIG reads only.
 
 **Flash mode check** at init, in the wolfHAL NOR driver (set up by
-`hal/boards/vek385/wolfHAL_board.c` with `WHAL_SPIMEM_NOR_FLAG_RESET` and
-`WHAL_SPIMEM_NOR_FLAG_MICRON_VCFG_1BIT`): read the JEDEC ID (`9Fh`) and
+`hal/boards/vek385/wolfHAL_board.c` with `WHAL_SPIMEM_NOR_FLAG_RESET` and the
+MT35X values from `spimem_nor_mt35x.h`): read the JEDEC ID (`9Fh`) and
 accept only `2C 5B 1C`; if it does not answer (or the flash was left in a
 non-SPI I/O mode), reset it (`66h`/`99h`), set the volatile I/O-mode
 register (`81h`) to 1-bit extended SPI, and read the ID again. A dead flash

@@ -4,7 +4,8 @@
 
 # Bind the wolfHAL drivers directly to the top-level API symbols:
 # whal_Uart_* -> PL011, whal_SpiMem_* -> Cadence OSPI, whal_Flash_* -> NOR
-# flash on the OSPI controller. No dispatch sources are compiled.
+# flash on the OSPI controller. Only the whal_Dma dispatch is compiled:
+# the Cadence driver reads through the OSPI DMA as a whal_Dma.
 CFLAGS+=-DWHAL_CFG_PL011_UART_DIRECT_API_MAPPING
 CFLAGS+=-DWHAL_CFG_CADENCE_OSPI_SPIMEM_DIRECT_API_MAPPING
 CFLAGS+=-DWHAL_CFG_SPIMEM_NOR_FLASH_DIRECT_API_MAPPING
@@ -15,7 +16,8 @@ CFLAGS+=-DWOLFHAL_UART_CRLF
 WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/reg.o
 WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/uart/pl011_uart.o
 WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/spimem/cadence_ospi_spimem.o
-WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/spimem/versal2_ospi_dma.o
+WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/dma/dma.o
+WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/dma/versal2_ospi_dma.o
 WOLFHAL_OBJS+=$(WOLFHAL_ROOT)/src/flash/spimem_nor_flash.o
 
 OBJS+=$(WOLFHAL_OBJS)

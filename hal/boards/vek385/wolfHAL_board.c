@@ -75,24 +75,25 @@ static void versal2_dcache_inval(void *buf, size_t len);
 static whal_Timeout vek385_dma_timeout = {
     VEK385_DMA_TIMEOUT_US, 0, vek385_tick_us
 };
-static whal_Versal2_OspiDma_Ctx versal2_dma_ctx = {
-    WHAL_VERSAL2_OSPI_BASE,
-    WHAL_VERSAL2_OSPI_DMA_SRC_RD_ADDR,
-    WHAL_VERSAL2_OSPI_DMA_DST_CTRL,
-    versal2_dcache_clean_inval,
-    versal2_dcache_inval,
-    &vek385_dma_timeout
+static whal_DmaMemXfer versal2_dma_xfer;
+static whal_Dma versal2_dma = {
+    .base = WHAL_VERSAL2_OSPI_BASE,
+    .driver = &whal_Versal2_OspiDma_Driver,
+    .cfg = &(whal_Versal2_OspiDma_Cfg) {
+        .srcRdAddr = WHAL_VERSAL2_OSPI_DMA_SRC_RD_ADDR,
+        .dstCtrl = WHAL_VERSAL2_OSPI_DMA_DST_CTRL,
+        .CacheCleanInval = versal2_dcache_clean_inval,
+        .CacheInval = versal2_dcache_inval,
+        .timeout = &vek385_dma_timeout,
+        .xfer = &versal2_dma_xfer,
+    },
 };
+#define VEK385_DMA (&versal2_dma)
 /* The DMA buffer and length must be whole cache lines (no shared lines). */
-static const whal_CadenceOspi_SpiMem_Dma versal2_dma = {
-    whal_Versal2_OspiDma_Arm,
-    whal_Versal2_OspiDma_Wait,
-    &versal2_dma_ctx,
-    CACHE_LINE_SIZE
-};
-#define VEK385_DMA_HOOK (&versal2_dma)
+#define VEK385_DMA_ALIGN CACHE_LINE_SIZE
 #else
-#define VEK385_DMA_HOOK NULL
+#define VEK385_DMA NULL
+#define VEK385_DMA_ALIGN 0
 #endif
 
 /* OSPI controller, 1-bit: clock /32, CS 0, board read capture. Init turns
@@ -111,7 +112,9 @@ whal_SpiMem g_wbOspi = {
         .indTrigRange = WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
         .sramPartition = WHAL_VERSAL2_OSPI_SRAM_PARTITION,
         .dmaPeriphCfg = WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
-        .dma = VEK385_DMA_HOOK,
+        .dma = VEK385_DMA,
+        .dmaCh = WHAL_VERSAL2_OSPI_DMA_CH,
+        .dmaAlign = VEK385_DMA_ALIGN,
         .timeout = &vek385_ospi_timeout,
     },
 };
@@ -132,9 +135,15 @@ whal_Flash g_wbExtFlash = {
         .readDummy = 0,
         .progOp = OSPI_OP_PAGE_PROGRAM4,
         .eraseOp = OSPI_OP_ERASE4_128K,
-        .flags = WHAL_SPIMEM_NOR_FLAG_FSR | WHAL_SPIMEM_NOR_FLAG_RESET |
-                 WHAL_SPIMEM_NOR_FLAG_MICRON_VCFG_1BIT,
+        .flags = WHAL_SPIMEM_NOR_FLAG_RESET,
         .id = VERSAL2_FLASH_JEDEC_ID,
+        .errOp = WHAL_SPIMEM_NOR_MT35X_ERR_OP,
+        .errMask = WHAL_SPIMEM_NOR_MT35X_ERR_MASK,
+        .errClearOp = WHAL_SPIMEM_NOR_MT35X_ERR_CLEAR_OP,
+        .rstRegOp = WHAL_SPIMEM_NOR_MT35X_RST_REG_OP,
+        .rstRegAddrBytes = WHAL_SPIMEM_NOR_MT35X_RST_REG_ADDR_BYTES,
+        .rstRegAddr = WHAL_SPIMEM_NOR_MT35X_RST_REG_ADDR,
+        .rstRegVal = WHAL_SPIMEM_NOR_MT35X_RST_REG_VAL,
         .timeout = &vek385_flash_timeout,
     },
 };
@@ -165,6 +174,14 @@ static int vek385_ospi_init(void)
 {
     uint8_t id[3] = { 0, 0, 0 };
     int ret = 0;
+
+#ifdef WOLFBOOT_OSPI_DMA
+    /* Clear DMA status an earlier stage may have left. */
+    if (whal_Dma_Init(&versal2_dma) != WHAL_SUCCESS) {
+        wolfBoot_printf("OSPI: DMA init failed\n");
+        return -1;
+    }
+#endif
 
     /* Turn on the controller. No controller reset; the NOR driver's Init
      * fixes the flash mode. */

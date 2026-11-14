@@ -4,7 +4,7 @@
 # amd-versal2-virt machine and exercises the REAL flash code: the ext_flash
 # code of hal/wolfhal.c (extracted verbatim) on the wolfHAL drivers the
 # VEK385 board links (lib/wolfHAL: spimem/cadence_ospi_spimem,
-# spimem/versal2_ospi_dma, flash/spimem_nor_flash, uart/pl011_uart) -
+# dma/versal2_ospi_dma, flash/spimem_nor_flash, uart/pl011_uart) -
 # flash ID read, 128 KB sector erase, page program, readback - plus, in
 # the DMA variant, CSU DMA reads. See flash_test.c.
 #
@@ -27,7 +27,8 @@ LDFLAGS := -nostdlib -static -T q4.ld -Wl,--build-id=none
 WHAL_SRC := $(WOLFHAL)/src/reg.c $(WOLFHAL)/src/uart/uart.c \
             $(WOLFHAL)/src/uart/pl011_uart.c $(WOLFHAL)/src/spimem/spimem.c \
             $(WOLFHAL)/src/spimem/cadence_ospi_spimem.c \
-            $(WOLFHAL)/src/spimem/versal2_ospi_dma.c \
+            $(WOLFHAL)/src/dma/versal2_ospi_dma.c \
+            $(WOLFHAL)/src/dma/dma.c \
             $(WOLFHAL)/src/flash/flash.c \
             $(WOLFHAL)/src/flash/spimem_nor_flash.c
 WHAL_OBJS := $(foreach s,$(WHAL_SRC),whal_$(notdir $(s:.c=.o)))
