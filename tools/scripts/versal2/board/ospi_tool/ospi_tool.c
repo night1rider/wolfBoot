@@ -32,7 +32,7 @@
 #include <wolfHAL/platform/amd/versal2.h>
 #include <wolfHAL/flash/spimem_nor_flash.h>
 #include <wolfHAL/flash/spimem_nor_mt35x.h>
-#include <wolfHAL/spimem/versal2_ospi_dma.h>
+#include <wolfHAL/dma/versal2_ospi_dma.h>
 
 /* Partition layout. Must match config/examples/versal2_vek385.config. */
 #define WOLFBOOT_PARTITION_BOOT_ADDRESS   0x1DC0000UL
@@ -146,35 +146,40 @@ static void ot_dcache_inval(void *buf, size_t len)
 }
 
 static whal_Timeout ot_dma_timeout = { 60000000U, 0, ot_tick_us };
-static whal_Versal2_OspiDma_Ctx ot_dma_ctx = {
-    WHAL_VERSAL2_OSPI_BASE,
-    WHAL_VERSAL2_OSPI_DMA_SRC_RD_ADDR,
-    WHAL_VERSAL2_OSPI_DMA_DST_CTRL,
-    ot_dcache_clean_inval,
-    ot_dcache_inval,
-    &ot_dma_timeout
+static whal_DmaMemXfer ot_dma_xfer;
+static whal_Dma ot_dma = {
+    .base = WHAL_VERSAL2_OSPI_BASE,
+    .driver = &whal_Versal2_OspiDma_Driver,
+    .cfg = &(whal_Versal2_OspiDma_Cfg) {
+        .srcRdAddr = WHAL_VERSAL2_OSPI_DMA_SRC_RD_ADDR,
+        .dstCtrl = WHAL_VERSAL2_OSPI_DMA_DST_CTRL,
+        .CacheCleanInval = ot_dcache_clean_inval,
+        .CacheInval = ot_dcache_inval,
+        .timeout = &ot_dma_timeout,
+        .xfer = &ot_dma_xfer,
+    },
 };
-static const whal_CadenceOspi_SpiMem_Dma ot_dma = {
-    whal_Versal2_OspiDma_Arm, whal_Versal2_OspiDma_Wait, &ot_dma_ctx,
-    CACHE_LINE_SIZE
-};
-#define OT_DMA_HOOK (&ot_dma)
+#define OT_DMA (&ot_dma)
+#define OT_DMA_ALIGN CACHE_LINE_SIZE
 #else
-#define OT_DMA_HOOK NULL
+#define OT_DMA NULL
+#define OT_DMA_ALIGN 0
 #endif
 
 /* The flash devices, set up as in hal/boards/vek385. */
 static whal_CadenceOspi_SpiMem_Cfg ot_ospi_cfg = {
-    WHAL_VERSAL2_OSPI_DEV_SIZE_VEK385,
-    VERSAL2_OSPI_BAUD_DIV_32,
-    VERSAL2_OSPI_CS_LINES,
-    VERSAL2_OSPI_RD_CAPTURE,
-    WHAL_VERSAL2_OSPI_IND_TRIG_BASE,
-    WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
-    WHAL_VERSAL2_OSPI_SRAM_PARTITION,
-    WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
-    OT_DMA_HOOK,
-    &ot_ospi_timeout
+    .devSize = WHAL_VERSAL2_OSPI_DEV_SIZE_VEK385,
+    .baudDiv = VERSAL2_OSPI_BAUD_DIV_32,
+    .csLines = VERSAL2_OSPI_CS_LINES,
+    .rdCapture = VERSAL2_OSPI_RD_CAPTURE,
+    .indTrigBase = WHAL_VERSAL2_OSPI_IND_TRIG_BASE,
+    .indTrigRange = WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
+    .sramPartition = WHAL_VERSAL2_OSPI_SRAM_PARTITION,
+    .dmaPeriphCfg = WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
+    .dma = OT_DMA,
+    .dmaCh = WHAL_VERSAL2_OSPI_DMA_CH,
+    .dmaAlign = OT_DMA_ALIGN,
+    .timeout = &ot_ospi_timeout,
 };
 static whal_SpiMem versal2_ospi = {
     WHAL_VERSAL2_OSPI_BASE, WHAL_VERSAL2_OSPI_DRIVER, &ot_ospi_cfg
@@ -214,16 +219,16 @@ static whal_Flash versal2_flash = {
 /* A device with no DMA, to read the same data with STIG only. */
 #if defined(WOLFBOOT_OSPI_DMA) && defined(OT_MODE_SCAN)
 static whal_CadenceOspi_SpiMem_Cfg ot_ospi_stig_cfg = {
-    WHAL_VERSAL2_OSPI_DEV_SIZE_VEK385,
-    VERSAL2_OSPI_BAUD_DIV_32,
-    VERSAL2_OSPI_CS_LINES,
-    VERSAL2_OSPI_RD_CAPTURE,
-    WHAL_VERSAL2_OSPI_IND_TRIG_BASE,
-    WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
-    WHAL_VERSAL2_OSPI_SRAM_PARTITION,
-    WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
-    NULL,
-    &ot_ospi_timeout
+    .devSize = WHAL_VERSAL2_OSPI_DEV_SIZE_VEK385,
+    .baudDiv = VERSAL2_OSPI_BAUD_DIV_32,
+    .csLines = VERSAL2_OSPI_CS_LINES,
+    .rdCapture = VERSAL2_OSPI_RD_CAPTURE,
+    .indTrigBase = WHAL_VERSAL2_OSPI_IND_TRIG_BASE,
+    .indTrigRange = WHAL_VERSAL2_OSPI_IND_TRIG_RANGE,
+    .sramPartition = WHAL_VERSAL2_OSPI_SRAM_PARTITION,
+    .dmaPeriphCfg = WHAL_VERSAL2_OSPI_DMA_PERIPH_CFG,
+    .dma = NULL,
+    .timeout = &ot_ospi_timeout,
 };
 static whal_SpiMem ot_ospi_stig = {
     WHAL_VERSAL2_OSPI_BASE, WHAL_VERSAL2_OSPI_DRIVER, &ot_ospi_stig_cfg
@@ -298,6 +303,12 @@ static int ospi_tool_init(void)
     uint8_t id[3] = { 0, 0, 0 };
 
     /* Same setup as vek385_ospi_init() in the board file. */
+#ifdef WOLFBOOT_OSPI_DMA
+    if (whal_Dma_Init(&ot_dma) != WHAL_SUCCESS) {
+        putstr("OT INIT: FAIL (DMA)\n");
+        return -1;
+    }
+#endif
     if (whal_SpiMem_Init(&versal2_ospi) != WHAL_SUCCESS) {
         putstr("OT INIT: FAIL (controller)\n");
         return -1;

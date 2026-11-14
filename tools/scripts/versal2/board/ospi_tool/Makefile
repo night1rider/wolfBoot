@@ -32,7 +32,8 @@ LDFLAGS := -nostdlib -static -T ospi_tool.ld -Wl,--build-id=none \
 WHAL_SRC := $(WOLFHAL)/src/reg.c $(WOLFHAL)/src/uart/uart.c \
             $(WOLFHAL)/src/uart/pl011_uart.c $(WOLFHAL)/src/spimem/spimem.c \
             $(WOLFHAL)/src/spimem/cadence_ospi_spimem.c \
-            $(WOLFHAL)/src/spimem/versal2_ospi_dma.c \
+            $(WOLFHAL)/src/dma/versal2_ospi_dma.c \
+            $(WOLFHAL)/src/dma/dma.c \
             $(WOLFHAL)/src/flash/flash.c \
             $(WOLFHAL)/src/flash/spimem_nor_flash.c
 WHAL_OBJS := $(foreach s,$(WHAL_SRC),whal_$(notdir $(s:.c=.o)))
