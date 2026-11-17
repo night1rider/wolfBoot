@@ -1643,6 +1643,21 @@ jobs:
       arch: aarch64
       config-file: ./config/examples/versal_vmk180.config
 
+  # Versal Gen 2 (VEK385): OSPI NOR A/B boot (TARGET=versal2)
+  versal2_vek385_test:
+    uses: ./.github/workflows/test-build.yml
+    with:
+      arch: aarch64
+      config-file: ./config/examples/versal2_vek385.config
+      make-args: CROSS_COMPILE=aarch64-linux-gnu-
+
+  versal2_vek385_linux_test:
+    uses: ./.github/workflows/test-build.yml
+    with:
+      arch: aarch64
+      config-file: ./config/examples/versal2_vek385_linux.config
+      make-args: CROSS_COMPILE=aarch64-linux-gnu-
+
   versal_vmk180_highddr_test:
     uses: ./.github/workflows/test-build-aarch64.yml
     with:
