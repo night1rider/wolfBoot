@@ -22,6 +22,7 @@ WOLFBOOT_LIB_WOLFPSA?=../../lib/wolfPSA
 WOLFBOOT_LIB_WOLFTPM?=../../lib/wolfTPM
 WOLFBOOT_LIB_WOLFHSM?=../../lib/wolfHSM
 WOLFBOOT_LIB_WOLFCOSE?=../../lib/wolfCOSE
+WOLFBOOT_LIB_WOLFHAL?=../../lib/wolfHAL
 
 ifeq ($(wildcard $(WOLFBOOT_LIB_WOLFPSA)),)
 WOLFBOOT_LIB_WOLFPSA=../../../external-libs/wolfPSA
@@ -35,6 +36,9 @@ endif
 ifeq ($(wildcard $(WOLFBOOT_LIB_WOLFCOSE)),)
 WOLFBOOT_LIB_WOLFCOSE=../../../external-libs/wolfCOSE
 endif
+ifeq ($(wildcard $(WOLFBOOT_LIB_WOLFHAL)),)
+WOLFBOOT_LIB_WOLFHAL=../../../external-libs/wolfHAL
+endif
 
 # Convert to absolute paths for standalone usage
 WOLFBOOT_LIB_WOLFSSL:=$(abspath $(WOLFBOOT_LIB_WOLFSSL))
@@ -43,6 +47,7 @@ WOLFBOOT_LIB_WOLFPSA:=$(abspath $(WOLFBOOT_LIB_WOLFPSA))
 WOLFBOOT_LIB_WOLFTPM:=$(abspath $(WOLFBOOT_LIB_WOLFTPM))
 WOLFBOOT_LIB_WOLFHSM:=$(abspath $(WOLFBOOT_LIB_WOLFHSM))
 WOLFBOOT_LIB_WOLFCOSE:=$(abspath $(WOLFBOOT_LIB_WOLFCOSE))
+WOLFBOOT_LIB_WOLFHAL:=$(abspath $(WOLFBOOT_LIB_WOLFHAL))
 
 CFLAGS=-I. -I../../src -I../../include -I$(WOLFBOOT_LIB_WOLFSSL)
 CFLAGS+=-g -ggdb
@@ -2000,15 +2005,15 @@ unit-versal-uart-rx: unit-versal-uart-rx.c versal_uart_rx_extract.h versal_host.
 # partition guard and the ext_flash_* glue) and runs it on a mock wolfHAL
 # flash device. The wolfHAL drivers below it are tested in wolfHAL
 # (lib/wolfHAL/tests).
-UNIT_WOLFHAL=../../lib/wolfHAL
 wolfhal_ext_flash_extract.h: ../../hal/wolfhal.c
 	sed -n '/^\/\*WOLFHAL_EXT_FLASH_BEGIN/,/^\/\*WOLFHAL_EXT_FLASH_END/p' \
 	  $< > $@
 	test -s $@
 
 unit-wolfhal-ext-flash: unit-wolfhal-ext-flash.c wolfhal_ext_flash_extract.h
-	gcc -o $@ unit-wolfhal-ext-flash.c $(UNIT_WOLFHAL)/src/flash/flash.c \
-	  -I$(UNIT_WOLFHAL) $(CFLAGS) $(LDFLAGS)
+	gcc -o $@ unit-wolfhal-ext-flash.c \
+	  $(WOLFBOOT_LIB_WOLFHAL)/src/flash/flash.c \
+	  -I$(WOLFBOOT_LIB_WOLFHAL) $(CFLAGS) $(LDFLAGS)
 
 # unit-raspi3-uart-rx runs the real uart_rx() from hal/raspi3.c, the
 # other PL011 console in the tree, against an emulated register block.
