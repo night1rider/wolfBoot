@@ -85,8 +85,9 @@ int hal_flash_erase(haladdr_t address, int len)
 
 #ifdef EXT_FLASH
 /*WOLFHAL_EXT_FLASH_BEGIN*/
-/* Program and erase must fit inside BOOT, UPDATE or SWAP; anything else is
- * refused. SWAP size is a variable so the unit tests can change it. */
+/* Program and erase must fit inside BOOT, UPDATE or SWAP, where that
+ * partition is in the external flash. Anything else is refused. */
+/* SWAP size is a variable so the unit tests can change it. */
 static uint32_t wolfhal_swap_size = (uint32_t)WOLFBOOT_SECTOR_SIZE;
 
 static int wolfhal_range_in_partition(uint32_t base, uint32_t size,
@@ -123,28 +124,32 @@ static int wolfhal_addr_fits(uintptr_t address)
     return ((uint64_t)address <= 0xFFFFFFFFULL);
 }
 
+/* A partition counts when its PART_*_EXT flag says it is in the external
+ * flash. Its address may be 0. */
 static int wolfhal_ext_flash_guard_ok(uint32_t addr, uint32_t len)
 {
+#ifdef PART_BOOT_EXT
     if (wolfhal_range_in_partition((uint32_t)WOLFBOOT_PARTITION_BOOT_ADDRESS,
                                    (uint32_t)WOLFBOOT_PARTITION_SIZE,
                                    addr, len)) {
         return 1;
     }
-#ifdef WOLFBOOT_PARTITION_UPDATE_ADDRESS
-    if (WOLFBOOT_PARTITION_UPDATE_ADDRESS != 0 &&
-        wolfhal_range_in_partition(
+#endif
+#ifdef PART_UPDATE_EXT
+    if (wolfhal_range_in_partition(
             (uint32_t)WOLFBOOT_PARTITION_UPDATE_ADDRESS,
-            (uint32_t)WOLFBOOT_PARTITION_SIZE, addr, len)) {
+            (uint32_t)WOLFBOOT_PARTITION_UPDATE_SIZE, addr, len)) {
         return 1;
     }
 #endif
-#ifdef WOLFBOOT_PARTITION_SWAP_ADDRESS
-    if (WOLFBOOT_PARTITION_SWAP_ADDRESS != 0 &&
-        wolfhal_range_in_partition((uint32_t)WOLFBOOT_PARTITION_SWAP_ADDRESS,
+#ifdef PART_SWAP_EXT
+    if (wolfhal_range_in_partition((uint32_t)WOLFBOOT_PARTITION_SWAP_ADDRESS,
                                    wolfhal_swap_size, addr, len)) {
         return 1;
     }
 #endif
+    (void)addr;
+    (void)len;
     return 0;
 }
 
@@ -160,10 +165,14 @@ int ext_flash_read(uintptr_t address, uint8_t *data, int len)
     return len;
 }
 
+/* Write and erase return 0 on success and -1 on error (docs/HAL.md). */
 int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
 {
-    if (data == NULL || len <= 0) {
+    if (len == 0) {
         return 0;
+    }
+    if (data == NULL || len < 0) {
+        return -1;
     }
     if (!wolfhal_addr_fits(address) ||
         wolfhal_ext_flash_guard_ok((uint32_t)address, (uint32_t)len) == 0) {
@@ -173,13 +182,16 @@ int ext_flash_write(uintptr_t address, const uint8_t *data, int len)
                          (size_t)len) != WHAL_SUCCESS) {
         return -1;
     }
-    return len;
+    return 0;
 }
 
 int ext_flash_erase(uintptr_t address, int len)
 {
-    if (len <= 0) {
+    if (len == 0) {
         return 0;
+    }
+    if (len < 0) {
+        return -1;
     }
     if (!wolfhal_addr_fits(address) ||
         wolfhal_ext_flash_guard_ok((uint32_t)address, (uint32_t)len) == 0) {
@@ -189,7 +201,7 @@ int ext_flash_erase(uintptr_t address, int len)
                          (size_t)len) != WHAL_SUCCESS) {
         return -1;
     }
-    return len;
+    return 0;
 }
 
 void ext_flash_lock(void)

@@ -178,6 +178,7 @@ TESTS+=unit-versal-ext-write
 TESTS+=unit-versal-wdt
 TESTS+=unit-versal-uart-rx
 TESTS+=unit-wolfhal-ext-flash
+TESTS+=unit-wolfhal-ext-flash-intboot
 TESTS+=unit-raspi3-uart-rx
 TESTS+=unit-mpfs-wdt
 TESTS+=unit-t10xx-qe-firmware
@@ -2014,6 +2015,13 @@ unit-wolfhal-ext-flash: unit-wolfhal-ext-flash.c wolfhal_ext_flash_extract.h
 	gcc -o $@ unit-wolfhal-ext-flash.c \
 	  $(WOLFBOOT_LIB_WOLFHAL)/src/flash/flash.c \
 	  -I$(WOLFBOOT_LIB_WOLFHAL) $(CFLAGS) $(LDFLAGS)
+
+# The same test for a board with BOOT in internal flash (no PART_BOOT_EXT).
+unit-wolfhal-ext-flash-intboot: unit-wolfhal-ext-flash.c \
+    wolfhal_ext_flash_extract.h
+	gcc -o $@ unit-wolfhal-ext-flash.c \
+	  $(WOLFBOOT_LIB_WOLFHAL)/src/flash/flash.c \
+	  -I$(WOLFBOOT_LIB_WOLFHAL) -DUNIT_BOOT_INTERNAL $(CFLAGS) $(LDFLAGS)
 
 # unit-raspi3-uart-rx runs the real uart_rx() from hal/raspi3.c, the
 # other PL011 console in the tree, against an emulated register block.

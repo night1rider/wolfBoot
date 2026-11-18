@@ -554,6 +554,7 @@ tools/unit-tests/unit-ti-hercules-write
 tools/unit-tests/unit-versal-ext-write
 tools/unit-tests/unit-versal-qspi-dma
 tools/unit-tests/unit-wolfhal-ext-flash
+tools/unit-tests/unit-wolfhal-ext-flash-intboot
 tools/unit-tests/unit-xspi-tfd-index
 tools/unit-tests/unit-zynq-erase-loop
 tools/unit-tests/unit-zynq-ext-write

@@ -39,7 +39,12 @@
 #define WOLFBOOT_PARTITION_UPDATE_ADDRESS 0x49C0000UL
 #define WOLFBOOT_PARTITION_SWAP_ADDRESS   0xFA40000UL
 #define WOLFBOOT_PARTITION_SIZE           0x2C00000UL
+#define WOLFBOOT_PARTITION_UPDATE_SIZE    WOLFBOOT_PARTITION_SIZE
 #define WOLFBOOT_SECTOR_SIZE              0x20000UL
+/* All three partitions are in the external flash (the guard needs this). */
+#define PART_BOOT_EXT   1
+#define PART_UPDATE_EXT 1
+#define PART_SWAP_EXT   1
 #define WOLFBOOT_DTS_BOOT_ADDRESS         0x7600000UL
 #define WOLFBOOT_DTS_UPDATE_ADDRESS       0x7E00000UL
 #define OT_DTS_SIZE                       0x100000UL
@@ -490,14 +495,13 @@ static int run(void)
     putdec(len); putstr(" erase="); puthex(elen); uart_putc('\n');
 
     for (off = 0; off < elen; off += WOLFBOOT_SECTOR_SIZE) {
-        if (ext_flash_erase(OT_DST + off, (int)WOLFBOOT_SECTOR_SIZE) !=
-                (int)WOLFBOOT_SECTOR_SIZE) {
+        if (ext_flash_erase(OT_DST + off, (int)WOLFBOOT_SECTOR_SIZE) != 0) {
             putstr("OT-WRITE: ERASE FAIL\n");
             return 1;
         }
     }
     putstr("OT-WRITE: ERASE OK\n");
-    if (ext_flash_write(OT_DST, src, (int)len) != (int)len) {
+    if (ext_flash_write(OT_DST, src, (int)len) != 0) {
         putstr("OT-WRITE: PROGRAM FAIL\n");
         return 1;
     }

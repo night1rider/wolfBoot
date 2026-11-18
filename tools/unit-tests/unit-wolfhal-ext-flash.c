@@ -32,10 +32,30 @@
 /* Partitions from config/examples/versal2_vek385.config. BOOT starts
  * at 0x1DC0000, after the 8 MB BOOT.BIN area. */
 #define WOLFBOOT_PARTITION_BOOT_ADDRESS   0x1DC0000UL
-#define WOLFBOOT_PARTITION_UPDATE_ADDRESS 0x49C0000UL
-#define WOLFBOOT_PARTITION_SWAP_ADDRESS   0xFA40000UL
 #define WOLFBOOT_PARTITION_SIZE           0x2C00000UL
 #define WOLFBOOT_SECTOR_SIZE              0x20000UL
+#define TEST_UPDATE_ADDRESS               0x49C0000UL
+#define TEST_SWAP_ADDRESS                 0xFA40000UL
+
+/* UPDATE and SWAP are variables here, so a test can move UPDATE or SWAP
+ * and change the UPDATE size. */
+static uint32_t test_update_addr = TEST_UPDATE_ADDRESS;
+static uint32_t test_update_size = WOLFBOOT_PARTITION_SIZE;
+static uint32_t test_swap_addr = TEST_SWAP_ADDRESS;
+#define WOLFBOOT_PARTITION_UPDATE_ADDRESS test_update_addr
+#define WOLFBOOT_PARTITION_UPDATE_SIZE    test_update_size
+#define WOLFBOOT_PARTITION_SWAP_ADDRESS   test_swap_addr
+
+/* The partitions in the external flash: all three on the VEK385. A build
+ * with UNIT_BOOT_INTERNAL tests a board whose BOOT is in internal flash. */
+#define PART_UPDATE_EXT 1
+#define PART_SWAP_EXT   1
+#ifndef UNIT_BOOT_INTERNAL
+#define PART_BOOT_EXT   1
+#define BOOT_ALLOWED    1
+#else
+#define BOOT_ALLOWED    0
+#endif
 
 /* BOOT.BIN area: 0x15C0000-0x1DBFFFF (8 MB). AMD's BOOT.BIN ends at
  * 0x1B0FE40, so a 4 MB area would overlap it at 0x19C0000-0x1B0FE40. */
@@ -120,10 +140,10 @@ static int flash_calls(void)
 
 START_TEST(test_addr_guard_accepts_partitions)
 {
-    ck_assert_msg(wolfhal_ext_flash_guard_ok(0x1DC0000, 0x1000) == 1,
-                  "BOOT start");
+    ck_assert_msg(wolfhal_ext_flash_guard_ok(0x1DC0000, 0x1000) ==
+                  BOOT_ALLOWED, "BOOT start");
     ck_assert_msg(wolfhal_ext_flash_guard_ok(0x1DC0000 + 0x2C00000 - 0x1000,
-                                     0x1000) == 1, "BOOT tail");
+                                     0x1000) == BOOT_ALLOWED, "BOOT tail");
     ck_assert_msg(wolfhal_ext_flash_guard_ok(0x49C0000, 0x20000) == 1,
                   "UPDATE 128 KB");
     ck_assert_msg(wolfhal_ext_flash_guard_ok(0x49C0000 + 0x2C00000 - 0x20000,
@@ -132,8 +152,8 @@ START_TEST(test_addr_guard_accepts_partitions)
     ck_assert_msg(wolfhal_ext_flash_guard_ok(0xFA40000,
                                              test_sector_size()) == 1,
                   "SWAP (full sector)");
-    ck_assert_msg(wolfhal_ext_flash_guard_ok(0x2000000, 0x100) == 1,
-                  "mid-BOOT program");
+    ck_assert_msg(wolfhal_ext_flash_guard_ok(0x2000000, 0x100) ==
+                  BOOT_ALLOWED, "mid-BOOT program");
 }
 END_TEST
 
@@ -226,6 +246,59 @@ START_TEST(test_addr_guard_refuses_wrapping_partition)
 }
 END_TEST
 
+/* UPDATE or SWAP at offset 0 of the external flash is a normal layout. */
+START_TEST(test_addr_guard_partition_at_offset_zero)
+{
+    uint8_t buf[16] = { 0 };
+
+    test_update_addr = 0;
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(0, 0x20000), 1);
+    ck_assert_int_eq(ext_flash_write(0, buf, sizeof(buf)), 0);
+    ck_assert_int_eq(ext_flash_erase(0, 0x20000), 0);
+    ck_assert_int_eq(fl_writes + fl_erases, 2);
+    test_update_addr = TEST_UPDATE_ADDRESS;
+
+    test_swap_addr = 0;
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(0, test_sector_size()), 1);
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(test_sector_size(), 0x100),
+                     0);
+}
+END_TEST
+
+/* UPDATE ends at the UPDATE size, which can differ from the BOOT size. */
+START_TEST(test_addr_guard_uses_update_size)
+{
+    uint32_t end = TEST_UPDATE_ADDRESS + WOLFBOOT_PARTITION_SIZE;
+
+    /* Smaller UPDATE: the sector after it is not UPDATE. */
+    test_update_size = WOLFBOOT_PARTITION_SIZE - 0x20000;
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(end - 0x40000, 0x20000), 1);
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(end - 0x20000, 0x20000), 0);
+    /* Larger UPDATE: its last sector (the trailer) is allowed. */
+    test_update_size = WOLFBOOT_PARTITION_SIZE + 0x20000;
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(end, 0x20000), 1);
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(end + 0x20000, 0x20000), 0);
+}
+END_TEST
+
+/* BOOT is only allowed when it is in the external flash. */
+START_TEST(test_addr_guard_boot_needs_part_boot_ext)
+{
+    uint8_t buf[16] = { 0 };
+
+    ck_assert_int_eq(wolfhal_ext_flash_guard_ok(0x1DC0000, 0x20000),
+                     BOOT_ALLOWED);
+#ifdef UNIT_BOOT_INTERNAL
+    ck_assert_int_eq(ext_flash_write(0x1DC0000, buf, sizeof(buf)), -1);
+    ck_assert_int_eq(ext_flash_erase(0x1DC0000, 0x20000), -1);
+    ck_assert_msg(flash_calls() == 0, "a refused request reached the flash");
+#else
+    ck_assert_int_eq(ext_flash_write(0x1DC0000, buf, sizeof(buf)), 0);
+    ck_assert_int_eq(ext_flash_erase(0x1DC0000, 0x20000), 0);
+#endif
+}
+END_TEST
+
 /* Lock and unlock are passed to the flash device and touch no data. The
  * mock has neither, like the NOR driver, which answers "not supported". */
 START_TEST(test_ext_flash_lock_unlock)
@@ -241,12 +314,13 @@ START_TEST(test_ext_flash_passes_requests)
     uint8_t buf[300];
 
     memset(buf, 0, sizeof(buf));
-    ck_assert_int_eq(ext_flash_write(0x49C0100, buf, 300), 300);
+    /* Write and erase return 0 on success, not the length. */
+    ck_assert_int_eq(ext_flash_write(0x49C0100, buf, 300), 0);
     ck_assert_int_eq(fl_writes, 1);
     ck_assert_uint_eq(fl_addr, 0x49C0100);
     ck_assert_uint_eq(fl_len, 300);
 
-    ck_assert_int_eq(ext_flash_erase(0x49C0000, 0x40000), 0x40000);
+    ck_assert_int_eq(ext_flash_erase(0x49C0000, 0x40000), 0);
     ck_assert_int_eq(fl_erases, 1);
     ck_assert_uint_eq(fl_addr, 0x49C0000);
     ck_assert_uint_eq(fl_len, 0x40000);
@@ -275,8 +349,11 @@ START_TEST(test_ext_flash_empty_requests)
     uint8_t buf[4] = { 0 };
 
     ck_assert_int_eq(ext_flash_write(0x49C0000, buf, 0), 0);
-    ck_assert_int_eq(ext_flash_write(0x49C0000, NULL, 4), 0);
     ck_assert_int_eq(ext_flash_erase(0x49C0000, 0), 0);
+    /* 0 means success now, so a write with no data is an error. */
+    ck_assert_int_eq(ext_flash_write(0x49C0000, NULL, 4), -1);
+    ck_assert_int_eq(ext_flash_write(0x49C0000, buf, -1), -1);
+    ck_assert_int_eq(ext_flash_erase(0x49C0000, -1), -1);
     ck_assert_int_eq(ext_flash_read(0x49C0000, buf, 0), 0);
     ck_assert_int_eq(ext_flash_read(0x49C0000, NULL, 4), 0);
     ck_assert_msg(flash_calls() == 0, "an empty request reached the flash");
@@ -294,6 +371,9 @@ static void setup(void)
     fl_len = 0;
     fl_ret = WHAL_SUCCESS;
     wolfhal_swap_size = test_sector_size();
+    test_update_addr = TEST_UPDATE_ADDRESS;
+    test_update_size = WOLFBOOT_PARTITION_SIZE;
+    test_swap_addr = TEST_SWAP_ADDRESS;
 }
 
 static void teardown(void)
@@ -312,6 +392,9 @@ Suite *wolfhal_ext_flash_suite(void)
     tcase_add_test(tc, test_ext_flash_refuses_outside_partitions);
     tcase_add_test(tc, test_ext_flash_refuses_above_4g);
     tcase_add_test(tc, test_addr_guard_refuses_wrapping_partition);
+    tcase_add_test(tc, test_addr_guard_partition_at_offset_zero);
+    tcase_add_test(tc, test_addr_guard_uses_update_size);
+    tcase_add_test(tc, test_addr_guard_boot_needs_part_boot_ext);
     tcase_add_test(tc, test_ext_flash_lock_unlock);
     tcase_add_test(tc, test_ext_flash_passes_requests);
     tcase_add_test(tc, test_ext_flash_driver_error);

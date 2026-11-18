@@ -241,9 +241,10 @@ add `DEBUG_UART=1` to enable UART debug output.
   external flash. `hal/wolfhal.c` implements `ext_flash_read`,
   `ext_flash_write`, `ext_flash_erase`, `ext_flash_lock` and
   `ext_flash_unlock` on it. Program and erase are refused unless they fit
-  fully inside the BOOT, UPDATE or SWAP partition, so other data on the
-  external flash (for example an earlier boot stage's image) is never
-  changed. `tools/unit-tests/unit-wolfhal-ext-flash.c` tests this code.
+  fully inside a BOOT, UPDATE or SWAP partition that is in the external
+  flash (`PART_BOOT_EXT`, `PART_UPDATE_EXT`, `PART_SWAP_EXT`), so other
+  data there (for example an earlier boot stage's image) is never changed.
+  `tools/unit-tests/unit-wolfhal-ext-flash.c` tests this code.
 - `BOARD_FLASH_DEV`: leave it undefined on a board with no internal flash.
   `hal_flash_write` and `hal_flash_erase` then fail, and all partitions must
   be in the external flash.
